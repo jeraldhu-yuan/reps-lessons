@@ -185,7 +185,9 @@ const inputs = {
 // ---------- flow ----------
 function lesson(def) {
   const mode = q.get('mode') === 'review' ? 'review' : 'lesson';
-  const seed = q.has('seed') ? +q.get('seed') : Math.floor(Math.random() * 1000);
+  let saved = null;
+  try { saved = JSON.parse(q.get('resume') || 'null'); } catch { /* start fresh */ }
+  const seed = saved ? saved.seed : q.has('seed') ? +q.get('seed') : Math.floor(Math.random() * 1000);
   const tag = gen => gen(0).concept;
   let items;
   if (mode === 'review') {
@@ -197,20 +199,29 @@ function lesson(def) {
   } else {
     items = [...def.learn.map(gen => ({ gen, phase: 'learn', v0: 0 })), ...def.problems.map(gen => ({ gen, phase: 'problems', v0: seed }))];
   }
+  if (saved && !(saved.done.length <= items.length)) saved = null; // the lesson changed since this was saved
 
   document.title = def.title;
-  document.body.innerHTML = '<header><div class="bar"><i></i></div><div class="phase"></div></header><main></main><footer><button id="go"></button></footer>';
-  const main = document.querySelector('main'), go = document.getElementById('go'), bar = document.querySelector('.bar i'), phaseEl = document.querySelector('.phase');
-  const first = []; // first-attempt result per item
-  let i = 0, attempt = 0;
+  document.body.innerHTML = '<header><div class="bar"><i></i></div><div class="phase"><button id="back" aria-label="Previous screen">‹</button><span></span></div></header><main></main><footer><button id="go"></button></footer>';
+  const main = document.querySelector('main'), go = document.getElementById('go'), back = document.getElementById('back');
+  const bar = document.querySelector('.bar i'), phaseEl = document.querySelector('.phase span');
+  const done = saved ? saved.done : [];   // settled items: { v: variant shown, value: the answer given }
+  const first = saved ? saved.first : []; // first-attempt result per item
+  let attempt = saved ? saved.attempt : 0, ended = false;
+  const firstProblem = items.findIndex(x => x.phase === 'problems');
+  // While a problem is unanswered the learn screens stay closed: problems test recall, not lookup.
+  const floor = () => !ended && done.length < items.length && items[done.length].phase === 'problems' ? firstProblem : 0;
   const api = { log, def, mode, items, cur: null };
 
-  post('lessonStarted', { lessonId: def.id, mode, total: items.length });
+  post('lessonStarted', { lessonId: def.id, mode, total: items.length, resumed: !!saved });
 
-  function show() {
-    const it = items[i], s = it.gen(it.v0 + attempt);
-    bar.style.width = (100 * i / items.length) + '%';
-    phaseEl.textContent = it.phase === 'learn' ? def.title : it.phase === 'review' ? 'Review' : `Problem ${i - items.findIndex(x => x.phase === 'problems') + 1} of ${def.problems.length} · no hints`;
+  function show(k) {
+    if (k >= items.length) return end();
+    const it = items[k], d = done[k], s = it.gen(d ? d.v : it.v0 + attempt);
+    bar.style.width = (100 * k / items.length) + '%';
+    phaseEl.textContent = it.phase === 'learn' ? def.title : it.phase === 'review' ? 'Review' : `Problem ${k - firstProblem + 1} of ${def.problems.length} · no hints`;
+    back.hidden = k <= floor();
+    back.onclick = () => show(k - 1);
     main.innerHTML = ''; main.scrollTop = 0;
     main.append(el('div', 'prompt', s.prompt));
     let stage = null;
@@ -223,42 +234,60 @@ function lesson(def) {
     const host = el('div'); main.append(host);
     go.textContent = 'Check'; go.disabled = true;
     const inp = inputs[s.input.type](s.input, host, ok => { go.disabled = !ok; }, stage);
-    api.cur = { screen: s, input: inp, phase: it.phase, stage, index: i, attempt };
-    go.onclick = () => {
-      const res = inp.check(), ok = !!res.correct;
-      if (attempt === 0) first[i] = { concept: s.concept, correct: ok };
-      post('questionAnswered', { lessonId: def.id, concept: s.concept, correct: ok, phase: it.phase, attempt, index: i });
+    const reveal = (res, retry) => {
+      const ok = !!res.correct;
       inp.lock(ok, !ok && it.phase === 'problems');
-      const retry = !ok && it.phase !== 'problems';
       const body = ok ? (s.explain || '') : (res.why || 'Not quite.') + (it.phase === 'learn' ? '' : '<br><br>' + (s.explain || ''));
       const fb = el('div', 'fb' + (ok ? '' : ' bad'), `<div class="tag">${ok ? 'Correct' : 'Not quite'}</div>${body}`);
       // with a visual, feedback sits right under it so the reveal animation stays in view
       if (stage) host.before(fb); else main.append(fb);
       fb.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       if (!retry && s.after && stage) s.after(stage);
-      go.textContent = retry ? 'Try a variant' : 'Continue';
-      go.onclick = () => { if (retry) attempt++; else { i++; attempt = 0; } i < items.length ? show() : end(); };
+      go.textContent = retry ? 'Try a variant' : 'Continue'; go.disabled = false;
+      go.onclick = () => show(retry ? k : k + 1);
+    };
+    if (d) { // an answered screen, shown again as it was left
+      api.cur = null; inp.set(d.value); reveal(inp.check(), false);
+      return;
+    }
+    api.cur = { screen: s, input: inp, phase: it.phase, stage, index: k, attempt };
+    go.onclick = () => {
+      const res = inp.check(), ok = !!res.correct, retry = !ok && it.phase !== 'problems';
+      if (attempt === 0) first[k] = { concept: s.concept, correct: ok };
+      post('questionAnswered', { lessonId: def.id, concept: s.concept, correct: ok, phase: it.phase, attempt, index: k });
+      reveal(res, retry);
+      if (retry) attempt++;
+      else { done[k] = { v: it.v0 + attempt, value: s.input.type === 'custom' ? !ok : JSON.parse(JSON.stringify(inp.value())) }; attempt = 0; }
+      post('progress', { lessonId: def.id, mode, index: done.length, total: items.length, state: { seed, attempt, done, first } });
     };
   }
 
   function end() {
-    bar.style.width = '100%'; phaseEl.textContent = '';
+    bar.style.width = '100%'; phaseEl.textContent = ''; api.cur = null;
+    back.hidden = !items.length;
+    back.onclick = () => show(items.length - 1);
     const graded = first.filter((_, k) => items[k].phase !== 'learn');
     const correct = graded.filter(r => r.correct).length, total = graded.length, score = total ? correct / total : 0;
     const missed = [...new Set(first.filter(r => !r.correct).map(r => r.concept))];
     const pass = +(q.get('pass') || 0.7);
-    if (mode === 'review') post('reviewCompleted', { lessonId: def.id, correct, total, results: graded });
-    else post('lessonCompleted', { lessonId: def.id, score, correct, total, missed });
+    if (!ended) {
+      ended = true;
+      if (mode === 'review') post('reviewCompleted', { lessonId: def.id, correct, total, results: graded });
+      else post('lessonCompleted', { lessonId: def.id, score, correct, total, missed });
+    }
     const ok = mode === 'review' || score >= pass;
     main.innerHTML = `<div class="end"><div class="score ${ok ? 'pass' : 'fail'}">${correct}/${total}</div>
       <p>${mode === 'review' ? 'Review cleared.' : ok ? 'Problem set passed.' : `Needs ${Math.round(pass * 100)}% to count. Run it again.`}</p>
       ${missed.length ? `<p style="color:var(--dim)">Queued for review:</p><ul>${missed.map(m => `<li>${m}</li>`).join('')}</ul>` : ''}</div>`;
     go.textContent = ok ? 'Done' : 'Retry'; go.disabled = false;
-    go.onclick = () => { if (ok) post('close', { lessonId: def.id }); else location.reload(); };
+    go.onclick = () => {
+      if (ok) return post('close', { lessonId: def.id });
+      const fresh = new URL(location.href); fresh.searchParams.delete('resume'); location.replace(fresh);
+    };
   }
 
   window.Reps.session = api;
-  items.length ? show() : end();
+  show(done.length);
 }
 
 window.Reps = { lesson, C, rad, rot, apply, mul, T, add, sub, rp, fmt, vec, pick, mat, proj, log };
