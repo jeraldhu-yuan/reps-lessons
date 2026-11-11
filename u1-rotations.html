@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<link rel="stylesheet" href="shared/reps.css">
+<script src="shared/reps.js"></script>
+</head>
+<body>
+<script>
+const { C, rp, add, fmt, vec, pick, mat, rot, apply, proj } = Reps;
+const near = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 0.1;
+const turn = d => d === 90 ? 'a quarter turn counter-clockwise' : d === -90 ? 'a quarter turn clockwise' : 'a half turn';
+const rule = d => d === 90 ? '(x, y) → (−y, x)' : d === -90 ? '(x, y) → (y, −x)' : '(x, y) → (−x, −y)';
+
+// ---- learn ----
+
+const landTip = v => {
+  const { p, deg } = pick(v, [{ p: [3, 1], deg: 90 }, { p: [2, -1], deg: 90 }, { p: [1, 3], deg: -90 }, { p: [-2, 1], deg: 90 }]);
+  const ans = rp(p, deg).map(Math.round);
+  let a = 0;
+  return {
+    concept: 'rot-apply-2d',
+    prompt: `A handpiece pivots about your fingertip at the origin. Its bur tip sits at <b>${vec(p)}</b>. You swing it ${turn(deg)}. <b>Tap where the tip lands.</b>`,
+    visual: st => {
+      st.draw = () => {
+        st.grid(); st.line([0, 0], p, C.ghost, 6); st.dot(p, C.ghost, null, 5);
+        if (a) { const t = rp(p, a); st.line([0, 0], t, C.fg, 6); st.dot(t, C.acc); } else st.dot(p, C.fg, 'tip');
+        st.dot([0, 0], C.fg, null, 4);
+      };
+    },
+    input: {
+      type: 'point', answer: ans,
+      why: t => near(t, rp(p, -deg)) ? 'That is the same turn in the other direction. Counter-clockwise carries the +x direction toward +y.'
+        : near(t, rp(p, 180)) ? 'That is a half turn. A quarter turn is 90°: the handpiece ends up perpendicular to where it started.'
+        : Math.abs(Math.hypot(...t) - Math.hypot(...p)) > 0.1 ? `The handpiece does not stretch. The tip starts √${p[0] * p[0] + p[1] * p[1]} from the pivot and must end the same distance away. Your point is not.`
+        : 'Right distance from the pivot, wrong angle. That spot is a mirror image, not a turn.',
+    },
+    explain: `A quarter turn sends ${rule(deg)}. Every step along x became a step along y, and the whole plane moved as one rigid sheet with the pivot pinned.`,
+    after: st => st.animate(900, t => { a = deg * t || 0.001; }),
+  };
+};
+
+const rigid = v => {
+  const k = pick(v, [
+    { ask: 'how far is B from C', ans: 5, unit: 'mm', deg: 137 },
+    { ask: 'what is the angle at A', ans: 90, unit: '°', deg: 200 },
+    { ask: 'how far is A from B', ans: 3, unit: 'mm', deg: 71 },
+  ]);
+  const A = [1, 0.5], B = [4, 0.5], Cc = [1, 4.5];
+  let a = 0, a0 = 0, g0 = 0;
+  return {
+    concept: 'rot-preserves',
+    prompt: `Three marks on a tooth: A to B is 3 mm, A to C is 4 mm, with a right angle at A. <b>Drag to spin the tooth</b> about the origin. After a ${k.deg}° turn, ${k.ask}?`,
+    visual: st => {
+      st.draw = () => {
+        const [a1, b1, c1] = [A, B, Cc].map(p => rp(p, a));
+        st.grid(false); st.poly([a1, b1, c1], C.fg, 'rgba(255,255,255,.08)');
+        st.dot(a1, C.acc, 'A'); st.dot(b1, C.x, 'B'); st.dot(c1, C.z, 'C'); st.dot([0, 0], C.fg, null, 4);
+      };
+      st.drag((w, ph) => { const g = Math.atan2(w[1], w[0]) * 180 / Math.PI; if (ph === 'down') { g0 = g; a0 = a; } else a = a0 + g - g0; });
+    },
+    input: {
+      type: 'number', answer: k.ans, unit: k.unit,
+      why: x => (k.ans === 5 && x === 7 ? '3 + 4 is the walk along the two edges. B to C is the straight line across. ' : '')
+        + 'Spin it and watch: the triangle never stretches or shears. Whatever was true of its shape before the turn is true after.',
+    },
+    explain: 'A rotation is rigid. Every length and every angle on the tooth is unchanged. Only the coordinates of the points change. That is the definition, before any matrix shows up.',
+  };
+};
+
+const columns = v => {
+  const { c, s, p } = pick(v, [{ c: 0.8, s: 0.6, p: [2, 1] }, { c: 0.6, s: 0.8, p: [2, 1] }, { c: 0.8, s: 0.6, p: [3, 1] }, { c: 0.6, s: 0.8, p: [1, 2] }]);
+  const u = [c, s], w = [-s, c], R = [[c, -s], [s, c]], q = apply(R, p);
+  let shown = 0;
+  return {
+    concept: 'rot-columns',
+    prompt: `The plane turned, and the unit arrows rode along: <span class="cx">x̂</span> landed on <b>${vec(u)}</b> and <span class="cy">ŷ</span> on <b>${vec(w)}</b>. The mark p was at ${p[0]}<span class="cx">x̂</span> + ${p[1]}<span class="cy">ŷ</span> and is glued to the plane. <b>What is the x-coordinate of where p lands?</b>`,
+    view: [-2, 4, -1, 4],
+    visual: st => {
+      st.draw = () => {
+        st.grid(); st.arrow([0, 0], [1, 0], C.ghost, 2); st.arrow([0, 0], [0, 1], C.ghost, 2); st.dot(p, C.ghost, 'p before', 5);
+        st.arrow([0, 0], u, C.x); st.arrow([0, 0], w, C.y);
+        if (shown) {
+          const m = u.map(x => x * p[0] * Math.min(1, shown * 2)), e = add(m, w.map(x => x * p[1] * Math.max(0, shown * 2 - 1)));
+          st.arrow([0, 0], m, C.x, 2); st.arrow(m, e, C.y, 2); if (shown === 1) st.dot(q, C.acc, 'p after');
+        }
+      };
+    },
+    input: {
+      type: 'number', answer: q[0],
+      why: x => Math.abs(x - (p[0] * c + p[1] * s)) < 0.02 ? `Check the sign: ŷ landed on ${vec(w)}, so its x-part is negative.`
+        : Math.abs(x - q[1]) < 0.02 && Math.abs(q[1] - q[0]) > 0.02 ? 'That is the y-coordinate. Add up the x-parts of the two landed arrows instead.'
+        : `p is still ${p[0]} of x̂ plus ${p[1]} of ŷ, just using the landed arrows: ${p[0]}·${vec(u)} + ${p[1]}·${vec(w)}. Add the x-parts.`,
+    },
+    explain: `p lands on ${p[0]}·${vec(u)} + ${p[1]}·${vec(w)} = <b>${vec(q)}</b>. Write the two landed arrows as columns and you have the rotation matrix: R = ${mat(R)}. Multiplying R by p is exactly this recipe.`,
+    after: st => st.animate(1200, t => { shown = t; }),
+  };
+};
+
+const M = { ccw: [[0, -1], [1, 0]], cw: [[0, 1], [-1, 0]], swap: [[0, 1], [1, 0]], half: [[-1, 0], [0, -1]] };
+const readMatrix = v => {
+  const sets = [
+    { ask: 'a quarter turn counter-clockwise', opts: [
+      { html: mat(M.cw), why: 'Read the first column: x̂ lands on (0, −1), pointing down. That is clockwise.' },
+      { html: mat(M.ccw), correct: true },
+      { html: mat(M.swap), why: 'x̂ lands on (0, 1), fine. But ŷ lands on (1, 0): the two arrows traded places. That is a mirror flip across the diagonal, not a turn.' },
+      { html: mat(M.half), why: 'x̂ lands on (−1, 0), pointing backwards. That is a half turn.' }] },
+    { ask: 'a rotation (some angle, no stretching, no flipping)', opts: [
+      { html: mat([[0.6, 0.8], [0.8, 0.6]]), why: 'The columns (0.6, 0.8) and (0.8, 0.6) are unit length but not perpendicular. The grid would be squashed.' },
+      { html: mat([[1, 1], [0, 1]]), why: 'ŷ lands on (1, 1), which has length √2 and leans over. That is a shear.' },
+      { html: mat([[2, 0], [0, 2]]), why: 'Both arrows doubled in length. That is scaling.' },
+      { html: mat([[0.6, -0.8], [0.8, 0.6]]), correct: true }] },
+    { ask: 'a quarter turn clockwise', opts: [
+      { html: mat(M.cw), correct: true },
+      { html: mat(M.half), why: 'x̂ lands on (−1, 0). That is a half turn.' },
+      { html: mat(M.ccw), why: 'Read the first column: x̂ lands on (0, 1), pointing up. That is counter-clockwise.' },
+      { html: mat([[0, -1], [-1, 0]]), why: 'x̂ lands on (0, −1), fine. But ŷ lands on (−1, 0), which is a flip, not a turn. A turn would carry ŷ to (1, 0).' }] },
+  ];
+  const k = pick(v, sets);
+  return {
+    concept: 'rot-valid',
+    prompt: `Columns are where <span class="cx">x̂</span> and <span class="cy">ŷ</span> land. <b>Which matrix is ${k.ask}?</b>`,
+    input: { type: 'choice', cols: 2, options: k.opts },
+    explain: 'Read any 2×2 by its columns: first column is where x̂ lands, second is where ŷ lands. It is a rotation exactly when the columns have unit length, are perpendicular, and keep their handedness (ŷ stays a quarter turn counter-clockwise of x̂).',
+  };
+};
+
+const undo = v => {
+  const start = pick(v, [50, -70, 130]);
+  const shape = [[0, 0], [3, 0], [3, 1], [1, 1], [1, 3.5], [0, 3.5]];
+  let a = start, a0 = 0, g0 = 0;
+  const off = () => ((a % 360) + 540) % 360 - 180;
+  return {
+    concept: 'rot-inverse',
+    prompt: `A scan of the tooth (yellow) came in turned by some rotation R against the reference (grey). <b>Drag to rotate it back onto the reference.</b>`,
+    visual: st => {
+      st.draw = () => {
+        st.grid(false); st.poly(shape, C.ghost, 'rgba(255,255,255,.05)');
+        st.poly(shape.map(p => rp(p, a)), C.acc, 'rgba(255,212,59,.12)', 2.5); st.dot([0, 0], C.fg, null, 4);
+      };
+      st.drag((w, ph) => {
+        const g = Math.atan2(w[1], w[0]) * 180 / Math.PI;
+        if (ph === 'down') { g0 = g; a0 = a; } else a = a0 + g - g0;
+        if (ph === 'up' && Math.abs(off()) < 4) a = 0;
+      });
+    },
+    input: {
+      type: 'custom',
+      check: () => ({ correct: Math.abs(off()) < 0.5, why: `Still ${fmt(Math.abs(off()))}° off. Keep turning until the yellow outline sits exactly on the grey one.` }),
+      solve: wrong => { a = wrong ? 25 : 0; },
+    },
+    explain: `The scan was turned by ${start}°, and you turned it by ${-start}°. Undoing a rotation is the same turn backwards about the same pivot. For the matrix this is free: the columns of R become the rows. <b>R⁻¹ = Rᵀ</b>, and you never need a general matrix inverse.`,
+  };
+};
+
+const burMarks = (ask, opts) => {
+  let spin = 0, yaw = 35, pitch = 20, last = null;
+  const A = [0, 0, -1.6], Cm = [0, 0, 1.6], r = 0.7;
+  return {
+    concept: 'rot-axis-3d',
+    prompt: `Now 3D. A bur will spin a quarter turn about its own shank axis (blue). <b>Drag to look around.</b> A sits at the tip centre, C at the shank centre, B on the cutting edge. ${ask}`,
+    view: [-3, 3, -3, 3],
+    visual: st => {
+      st.draw = () => {
+        const P = proj(yaw, pitch), ringAt = z => Array.from({ length: 40 }, (_, i) => P([r * Math.cos(i * Math.PI / 20), r * Math.sin(i * Math.PI / 20), z]));
+        const B = [r * Math.cos(Reps.rad(spin)), r * Math.sin(Reps.rad(spin)), 0];
+        st.line(P([0, 0, -2.7]), P([0, 0, 2.7]), C.z, 1.5, [5, 5]);
+        st.poly(ringAt(-1.6), C.ghost); st.poly(ringAt(1.6), C.ghost); st.poly(ringAt(0), C.line, null, 1);
+        for (const t of [0, 90, 180, 270]) { const c = Math.cos(Reps.rad(t + spin)) * r, s = Math.sin(Reps.rad(t + spin)) * r; st.line(P([c, s, -1.6]), P([c, s, 1.6]), C.ghost, 1.5); }
+        st.dot(P(A), C.acc, 'A'); st.dot(P(Cm), C.y, 'C'); st.dot(P(B), C.x, 'B');
+      };
+      st.drag((w, ph) => { if (ph !== 'down' && last) { yaw -= (w[0] - last[0]) * 40; pitch = Math.max(-80, Math.min(80, pitch + (w[1] - last[1]) * 40)); } last = ph === 'up' ? null : w; });
+    },
+    input: { type: 'choice', options: opts },
+    explain: 'Every 3D rotation has an axis: the line of points it leaves exactly where they were. Everything off the axis travels on a circle around it. This matters for your bur: spinning a symmetric cylinder about its own axis changes nothing a camera can see, which is why Unit 5 recovers a 5-DoF pose instead of 6.',
+    after: st => st.animate(1400, t => { spin = 90 * t; }),
+  };
+};
+const axis3d = v => burMarks(...pick(v, [
+  ['<b>Which marks end up exactly where they started?</b>', [
+    { html: 'Only A', why: 'A stays, yes. But C is on the same line through the middle of the bur. What would carry it anywhere?' },
+    { html: 'A and C', correct: true },
+    { html: 'None. Everything on a rotating body moves.', why: 'Think of a spinning top: the points along its spindle turn in place but do not go anywhere.' },
+    { html: 'All three', why: 'B sits on the rim, 0.7 from the axis. A quarter turn carries it a quarter of the way around.' }]],
+  ['<b>Which marks move to a new position?</b>', [
+    { html: 'A, B and C', why: 'A and C sit on the axis itself. Points on the axis have no circle to travel on.' },
+    { html: 'B and C', why: 'C is at the centre of the shank, right on the axis. It turns in place.' },
+    { html: 'Only B', correct: true },
+    { html: 'None of them', why: 'B is on the rim, off the axis. It travels a quarter circle.' }]],
+]));
+
+// ---- problems ----
+
+const pApply = v => {
+  const k = pick(v, [
+    { p: [2, 0], deg: 90, i: 1 }, { p: [0, 3], deg: 90, i: 0 }, { p: [4, 1], deg: -90, i: 1 }, { p: [1, 2], deg: 180, i: 0 }, { p: [3, 2], deg: 90, i: 0 },
+  ]);
+  const q = rp(k.p, k.deg).map(Math.round);
+  return {
+    concept: 'rot-apply-2d',
+    prompt: `The point <b>${vec(k.p)}</b> is rotated ${turn(k.deg)} about the origin. <b>What is its new ${'xy'[k.i]}-coordinate?</b>`,
+    visual: st => { st.draw = () => { st.grid(); st.dot(k.p, C.acc); }; },
+    input: { type: 'number', answer: q[k.i] },
+    explain: `${turn(k.deg)[0].toUpperCase() + turn(k.deg).slice(1)} sends ${rule(k.deg)}, so ${vec(k.p)} lands on ${vec(q)}.`,
+  };
+};
+
+const pColumns = v => {
+  const k = pick(v, [
+    { c: 0.6, s: 0.8, p: [5, 0], i: 0 }, { c: 0.6, s: 0.8, p: [0, 5], i: 0 }, { c: 0.8, s: 0.6, p: [5, 5], i: 1 }, { c: 0.6, s: 0.8, p: [10, 5], i: 0 }, { c: 0.8, s: 0.6, p: [5, 10], i: 0 },
+  ]);
+  const R = [[k.c, -k.s], [k.s, k.c]], q = apply(R, k.p);
+  return {
+    concept: 'rot-columns',
+    prompt: `R = ${mat(R)} rotates the plane. The point p = <b>${vec(k.p)}</b> rides along. <b>What is the ${'xy'[k.i]}-coordinate of R·p?</b>`,
+    input: { type: 'number', answer: q[k.i] },
+    explain: `R·p = ${k.p[0]}·(first column) + ${k.p[1]}·(second column) = ${k.p[0]}·${vec([k.c, k.s])} + ${k.p[1]}·${vec([-k.s, k.c])} = ${vec(q)}.`,
+  };
+};
+
+const pInverse = v => {
+  const R = [[0.8, -0.6], [0.6, 0.8]];
+  const k = pick(v, [
+    { prompt: `R = ${mat(R)} is a rotation. <b>Which matrix undoes it?</b>`, input: { type: 'choice', cols: 2, options: [
+      { html: mat([[-0.8, 0.6], [-0.6, -0.8]]) }, { html: mat([[0.8, 0.6], [-0.6, 0.8]]), correct: true }, { html: mat(R) }, { html: mat([[1.25, -1.67], [1.67, 1.25]]) }] } },
+    { prompt: `R turns the plane by 35°. You apply R once, then Rᵀ twice. <b>What is the net rotation, in degrees?</b> (counter-clockwise positive)`, input: { type: 'number', answer: -35, unit: '°' } },
+    { prompt: `R = ${mat(R)} is a rotation and p = (3, 1). <b>What is the x-coordinate of Rᵀ·(R·p)?</b>`, input: { type: 'number', answer: 3 } },
+    { prompt: `R = ${mat([[0, -1], [1, 0]])} is a rotation. <b>Which matrix undoes it?</b>`, input: { type: 'choice', cols: 2, options: [
+      { html: mat(M.cw), correct: true }, { html: mat(M.ccw) }, { html: mat(M.half) }, { html: mat(M.swap) }] } },
+  ]);
+  return { concept: 'rot-inverse', ...k, explain: 'The inverse of a rotation is its transpose, Rᵀ: the same turn backwards. Columns become rows. Applying Rᵀ after R puts every point back where it started.' };
+};
+
+const pAxis = v => {
+  const k = pick(v, [{ p: [1, 0, 2], i: 2 }, { p: [1, 0, 2], i: 1 }, { p: [0, 2, 5], i: 0 }, { p: [3, 0, -1], i: 2 }, { p: [2, 1, 4], i: 0 }]);
+  const q = [-k.p[1], k.p[0], k.p[2]];
+  return {
+    concept: 'rot-axis-3d',
+    prompt: `A rotation of 90° about the z-axis (counter-clockwise seen from +z) is applied to the point <b>${vec(k.p)}</b>. <b>What is its new ${'xyz'[k.i]}-coordinate?</b>`,
+    input: { type: 'number', answer: q[k.i] },
+    explain: `The z-axis is the rotation axis, so z is untouched. In the x-y plane it is the familiar quarter turn (x, y) → (−y, x). ${vec(k.p)} lands on ${vec(q)}.`,
+  };
+};
+
+Reps.lesson({
+  id: 'u1-rotations',
+  title: 'Rotations',
+  learn: [landTip, rigid, columns, readMatrix, undo, axis3d],
+  problems: [pApply, pColumns, pInverse, pAxis],
+});
+</script>
+</body>
+</html>

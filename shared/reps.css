@@ -1,0 +1,62 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f1115; --card: #191c23; --line: #2a2f3a; --fg: #e8eaed; --dim: #8b93a1;
+  --acc: #ffd43b; --good: #51cf66; --bad: #ff6b6b; --x: #ff6b6b; --y: #51cf66; --z: #4dabf7;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+  font: 17px/1.45 -apple-system, system-ui, sans-serif; -webkit-text-size-adjust: 100%; }
+body { display: flex; flex-direction: column; height: 100dvh; overflow: hidden;
+  user-select: none; -webkit-user-select: none; }
+header { padding: calc(env(safe-area-inset-top) + 10px) 16px 8px; }
+.bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.bar i { display: block; height: 100%; width: 0; background: var(--acc); transition: width .3s; }
+.phase { margin-top: 6px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+main { flex: 1; overflow-y: auto; padding: 4px 16px 16px; max-width: 560px; width: 100%; margin: 0 auto; }
+footer { padding: 10px 16px calc(env(safe-area-inset-bottom) + 12px); max-width: 560px; width: 100%; margin: 0 auto; }
+button { font: inherit; color: inherit; }
+#go { width: 100%; padding: 15px; border: 0; border-radius: 14px; background: var(--acc); color: #111;
+  font-weight: 700; }
+#go:disabled { background: var(--line); color: var(--dim); }
+.prompt { margin: 8px 0 12px; }
+.prompt b, .fb b { color: var(--acc); font-weight: 600; }
+canvas.stage { display: block; width: 100%; border-radius: 14px; background: var(--card); margin-bottom: 12px; }
+.readout { font: 14px ui-monospace, Menlo, monospace; color: var(--dim); margin: -4px 0 0; }
+.readout:empty { display: none; }
+
+.opts { display: grid; gap: 8px; }
+.opts.cols2 { grid-template-columns: 1fr 1fr; }
+.opt { padding: 12px 14px; border: 1.5px solid var(--line); border-radius: 12px; background: var(--card);
+  text-align: left; display: flex; align-items: center; justify-content: center; min-height: 48px; }
+.opt.sel { border-color: var(--acc); }
+.opt.right { border-color: var(--good); }
+.opt.wrong { border-color: var(--bad); }
+.locked { pointer-events: none; }
+
+.num { display: flex; align-items: center; gap: 10px; }
+.num input { width: 130px; padding: 12px; border-radius: 12px; border: 1.5px solid var(--line);
+  background: var(--card); color: var(--fg); font: 600 20px ui-monospace, Menlo, monospace; text-align: center;
+  user-select: text; -webkit-user-select: text; }
+.num input:focus { outline: none; border-color: var(--acc); }
+
+.slots, .tiles { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-height: 52px; }
+.slots { padding: 8px; border: 1.5px dashed var(--line); border-radius: 12px; margin-bottom: 10px; }
+.slots:empty::before { content: 'tap tiles to build the chain'; color: var(--dim); font-size: 14px; padding-left: 4px; }
+.tile { padding: 9px 12px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--card); }
+.tile.used { opacity: .25; pointer-events: none; }
+
+.fb { margin: 12px 0 14px; padding: 12px 14px; border-radius: 12px; background: var(--card); border-left: 4px solid var(--good); }
+.fb.bad { border-left-color: var(--bad); }
+.fb .tag { font-weight: 700; color: var(--good); margin-bottom: 4px; }
+.fb.bad .tag { color: var(--bad); }
+
+.mat { display: inline-grid; vertical-align: middle; gap: 2px 12px; padding: 4px 8px; margin: 2px 3px;
+  border-left: 2px solid var(--fg); border-right: 2px solid var(--fg); border-radius: 5px;
+  font: 15px ui-monospace, Menlo, monospace; text-align: right; }
+sub { font-size: .68em; }
+.cx { color: var(--x); } .cy { color: var(--y); } .cz { color: var(--z); } .ca { color: var(--acc); }
+
+.end { text-align: center; padding-top: 12vh; }
+.end .score { font-size: 64px; font-weight: 800; }
+.end .pass { color: var(--good); } .end .fail { color: var(--bad); }
+.end ul { text-align: left; color: var(--dim); }

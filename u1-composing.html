@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<link rel="stylesheet" href="shared/reps.css">
+<script src="shared/reps.js"></script>
+</head>
+<body>
+<script>
+const { C, rp, add, vec, pick, mat } = Reps;
+const near = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 0.1;
+const q = (p, deg) => rp(p, deg).map(Math.round);           // exact quarter turns
+const turn = d => d === 90 ? 'a quarter turn counter-clockwise' : 'a quarter turn clockwise';
+const Rm = d => d === 90 ? [[0, -1], [1, 0]] : [[0, 1], [-1, 0]];
+const neg = p => p.map(x => -x || 0);
+
+// The handpiece outline, and where a point is after fraction u of a two-step move.
+// order 'ts' = turn about the origin, then slide. 'st' = slide, then turn about the origin.
+const HP = [[0, 0], [1.6, 0], [1.6, 0.4], [0.4, 0.4], [0.4, 1], [0, 1]];
+const at = (p, deg, t, order, u) => {
+  const f = Math.min(1, u * 2), s = Math.max(0, u * 2 - 1);
+  return order === 'ts' ? add(rp(p, deg * f), t.map(x => x * s)) : rp(add(p, t.map(x => x * f)), deg * s);
+};
+const drawHP = (st, deg, t, order, u, color, fill) => st.poly(HP.map(p => at(p, deg, t, order, u)), color, fill, 2.5);
+
+// ---- learn ----
+
+const orderMatters = v => {
+  const { deg, t, view } = pick(v, [{ deg: 90, t: [3, 0], view: [-2, 5, -1, 5] }, { deg: -90, t: [0, 3], view: [-2, 5, -2, 4] }, { deg: 90, t: [0, 2], view: [-4, 3, -1, 4] }]);
+  let u = 0;
+  return {
+    concept: 'compose-order',
+    prompt: `Two moves for the handpiece. <b>TURN</b>: ${turn(deg)} about the origin. <b>SLIDE</b>: shift by ${vec(t)}. Compare doing TURN then SLIDE against SLIDE then TURN. <b>Where does it end up?</b>`,
+    view,
+    visual: st => {
+      st.draw = () => {
+        st.grid(); drawHP(st, deg, t, 'ts', 0, C.ghost, 'rgba(255,255,255,.06)');
+        if (u) {
+          drawHP(st, deg, t, 'ts', u, C.acc, 'rgba(255,212,59,.12)'); drawHP(st, deg, t, 'st', u, C.z, 'rgba(77,171,247,.12)');
+          if (u === 1) { st.label(add(at([0.8, 0.5], deg, t, 'ts', 1), [0, -0.9]), 'turn, slide', C.acc); st.label(add(at([0.8, 0.5], deg, t, 'st', 1), [0, 0.9]), 'slide, turn', C.z); }
+        }
+      };
+    },
+    input: { type: 'choice', options: [
+      { html: 'Same place, same heading', why: 'Follow the handle end at the origin. Turn-then-slide leaves it pinned during the turn and then slides it. Slide-then-turn slides it away first, so the turn then swings it around the origin on an arc.' },
+      { html: 'Same heading, different place', correct: true },
+      { html: 'Different place and different heading', why: 'Different place, yes. But heading only changes during the turn, and both orders contain exactly one quarter turn.' }] },
+    explain: 'Both orders turn the handpiece by the same amount, so it points the same way. But a turn about the origin also swings anything that is not at the origin. Slide first, and the slide itself gets swung around. <b>Order matters.</b>',
+    after: st => st.animate(1800, t2 => { u = t2 || 0.001; }),
+  };
+};
+
+const tapMove = (order, v) => {
+  const { p, deg, t } = pick(v, [{ p: [1, 0], deg: 90, t: [3, 0] }, { p: [2, 1], deg: 90, t: [1, 2] }, { p: [1, 2], deg: -90, t: [2, 0] }, { p: [1, 1], deg: 90, t: [2, 1] }]);
+  const ts = add(q(p, deg), t), stt = q(add(p, t), deg), ans = order === 'ts' ? ts : stt, other = order === 'ts' ? stt : ts;
+  let u = 0;
+  const first = order === 'ts' ? `${turn(deg)} about the origin, <b>then</b> slide by ${vec(t)}` : `slide by ${vec(t)}, <b>then</b> ${turn(deg)} about the origin`;
+  return {
+    concept: order === 'ts' ? 'rigid-apply' : 'compose-order',
+    prompt: `The mark p sits at <b>${vec(p)}</b> on the handpiece. The move: ${first}. <b>Tap where p ends up.</b>`,
+    view: [-4, 6, -4, 6],
+    visual: st => {
+      st.draw = () => {
+        st.grid(); drawHP(st, deg, t, order, 0, C.ghost, 'rgba(255,255,255,.06)'); st.dot(p, u ? C.ghost : C.fg, u ? null : 'p', 5);
+        if (u) { drawHP(st, deg, t, order, u, C.acc, 'rgba(255,212,59,.12)'); st.dot(at(p, deg, t, order, u), C.acc); }
+      };
+    },
+    input: {
+      type: 'point', answer: ans,
+      why: w => near(w, other) ? `That is the other order (${order === 'ts' ? 'slide first, then turn' : 'turn first, then slide'}). Here the ${order === 'ts' ? 'turn' : 'slide'} comes first.`
+        : near(w, add(p, t)) ? 'You slid p but never turned it.'
+        : near(w, q(p, deg)) ? 'You turned p but never slid it.'
+        : order === 'ts' ? `Two steps. Turn p about the origin first: it lands on ${vec(q(p, deg))}. Then slide that point.`
+        : `Two steps. Slide p first: it lands on ${vec(add(p, t))}. Then turn that point about the origin.`,
+    },
+    explain: order === 'ts'
+      ? `Turn: ${vec(p)} → ${vec(q(p, deg))}. Slide: → <b>${vec(ans)}</b>. In symbols <b>p′ = R·p + t</b>. A rotation followed by a translation is the standard form of a rigid transform, written (R, t).`
+      : `Slide: ${vec(p)} → ${vec(add(p, t))}. Turn: → <b>${vec(ans)}</b>. In symbols R·(p + t) = R·p + <b>R·t</b>. The slide ${vec(t)} got rotated into ${vec(q(t, deg))}. A rotation applied after a translation rotates the translation too. Everything about composing transforms follows from this.`,
+    after: st => st.animate(1500, t2 => { u = t2 || 0.001; }),
+  };
+};
+
+const composeOrigin = v => {
+  const { dA, tA, dB, tB } = pick(v, [{ dA: 90, tA: [3, 0], dB: 90, tB: [1, 0] }, { dA: 90, tA: [0, 2], dB: 90, tB: [2, 0] }, { dA: -90, tA: [1, 1], dB: 90, tB: [0, 3] }]);
+  const ans = add(q(tB, dA), tA);
+  let u = 0;
+  return {
+    concept: 'compose-formula',
+    prompt: `Two rigid transforms, each "turn about the origin, then slide".<br><b>B</b>: ${turn(dB)}, slide ${vec(tB)}.<br><b>A</b>: ${turn(dA)}, slide ${vec(tA)}.<br>Apply B first, then A. <b>Tap where the origin mark ends up.</b>`,
+    view: [-4, 6, -4, 6],
+    visual: st => {
+      st.draw = () => {
+        st.grid(); st.dot([0, 0], u ? C.ghost : C.fg, null, 5);
+        if (u) {
+          const f = Math.min(1, u * 2), s = Math.max(0, u * 2 - 1), mid = tB.map(x => x * f);
+          st.arrow([0, 0], mid, C.z, 2); if (s) { st.dot(tB, C.z, 'after B', 4); st.dot(at(tB, dA, tA, 'ts', s), C.acc, u === 1 ? 'after A' : null); }
+        }
+      };
+    },
+    input: {
+      type: 'point', answer: ans,
+      why: w => near(w, add(tA, tB)) ? `You added the two slides. But B's slide ${vec(tB)} happens before A's turn, so A's turn swings it to ${vec(q(tB, dA))}.`
+        : near(w, add(q(tA, dB), tB)) ? 'That is A first, then B. Here B goes first.'
+        : near(w, tB) ? 'That is where the origin is after B alone. A still has to turn it about the origin and slide it.'
+        : `Track it step by step. B turns the origin (nothing happens) and slides it to ${vec(tB)}. Now A turns that point about the origin, then slides it by ${vec(tA)}.`,
+    },
+    explain: `B takes the origin to t<sub>B</sub> = ${vec(tB)}. A turns that to ${vec(q(tB, dA))} and slides it to <b>${vec(ans)}</b>. Where the origin ends up is the translation of the combined transform, and the two turns simply stack. So A after B is<br><b>(R<sub>A</sub>R<sub>B</sub>, &nbsp;R<sub>A</sub>t<sub>B</sub> + t<sub>A</sub>)</b>.<br>Translations do not just add: the later rotation acts on the earlier slide.`,
+    after: st => st.animate(1500, t2 => { u = t2 || 0.001; }),
+  };
+};
+
+const undoTiles = v => {
+  const { deg, t } = pick(v, [{ deg: 90, t: [3, 0] }, { deg: -90, t: [0, 2] }, { deg: 90, t: [-2, 1] }]);
+  const tiles = [`turn back: ${turn(-deg)}`, `slide ${vec(t)}`, `repeat: ${turn(deg)}`, `slide ${vec(neg(t))}`];
+  const inv = neg(q(t, -deg));
+  let u = 1;
+  return {
+    concept: 'rigid-inverse',
+    prompt: `The handpiece (yellow) was moved by T: ${turn(deg)} about the origin, <b>then</b> slide ${vec(t)}. <b>Build the two moves that put it back on the grey outline.</b>`,
+    view: [-4, 5, -3, 5],
+    visual: st => { st.draw = () => { st.grid(); drawHP(st, deg, t, 'ts', 0, C.ghost, 'rgba(255,255,255,.06)'); drawHP(st, deg, t, 'ts', u, C.acc, 'rgba(255,212,59,.12)'); }; },
+    input: {
+      type: 'order', tiles, answer: [3, 0],
+      why: o => o.join() === '0,3' ? `Right moves, wrong order. Try it in your head: turning back first swings the handpiece around the origin, and then sliding by ${vec(neg(t))} misses. The slide was done last, so it must be undone first.`
+        : o.includes(1) || o.includes(2) ? 'One of those moves repeats part of T instead of reversing it. Each step of T needs its opposite.'
+        : 'Undo the most recent step first, like taking off shoes before socks.',
+    },
+    explain: `Undo in reverse order: slide back, then turn back. In symbols p = Rᵀ(p′ − t) = Rᵀp′ − Rᵀt. Read that as a standard turn-then-slide transform and you get the inverse:<br><b>T⁻¹ = (Rᵀ, −Rᵀt)</b>.<br>Here that is ${turn(-deg)}, then slide ${vec(inv)}. Note the slide is <b>not</b> simply ${vec(neg(t))}.`,
+    after: st => st.animate(1500, t2 => { u = 1 - t2; }),
+  };
+};
+
+const hom = (R, t) => [[R[0][0], R[0][1], t[0]], [R[1][0], R[1][1], t[1]], [0, 0, 1]];
+const homogeneous = v => {
+  const { tA, tB, i } = pick(v, [{ tA: [3, 0], tB: [1, 0], i: 0 }, { tA: [0, 2], tB: [2, 0], i: 1 }, { tA: [1, 1], tB: [0, 2], i: 0 }]);
+  const R = Rm(90), ans = add(q(tB, 90), tA), prod = hom([[-1, 0], [0, -1]], ans);
+  prod[i][2] = '<b>?</b>';
+  return {
+    concept: 'homogeneous',
+    prompt: `Pack (R, t) into one 3×3 matrix with R top-left, t in the last column, and a bottom row of 0 0 1. Then "apply B, then A" is just the matrix product.<br>T<sub>A</sub> = ${mat(hom(R, tA))}<br>T<sub>B</sub> = ${mat(hom(R, tB))}<br>T<sub>A</sub>·T<sub>B</sub> = ${mat(prod)}<br><b>What is the missing entry?</b>`,
+    input: {
+      type: 'number', answer: ans[i],
+      why: x => Math.abs(x - (tA[i] + tB[i])) < 0.01 ? `That is t<sub>A</sub> + t<sub>B</sub>. Do the actual row-times-column: the last column of the product is R<sub>A</sub>·t<sub>B</sub> + t<sub>A</sub>.`
+        : `Row ${i + 1} of T<sub>A</sub> times the last column of T<sub>B</sub>: (${hom(R, tA)[i].join(', ')}) · (${tB[0]}, ${tB[1]}, 1).`,
+    },
+    explain: `Row ${i + 1} of T<sub>A</sub> times the last column of T<sub>B</sub> gives <b>${ans[i]}</b>. The product's last column is R<sub>A</sub>t<sub>B</sub> + t<sub>A</sub> = ${vec(ans)}, the same rule you found by tracking the origin. The 3×3 (4×4 in 3D) form exists so that chaining transforms is plain matrix multiplication, rightmost applied first.`,
+  };
+};
+
+// ---- problems ----
+
+const pApply = v => {
+  const k = pick(v, [{ p: [1, 3], deg: 90, t: [2, 1], i: 0 }, { p: [2, 1], deg: 90, t: [0, 3], i: 1 }, { p: [3, 1], deg: -90, t: [1, 1], i: 1 }, { p: [0, 2], deg: 90, t: [4, 0], i: 0 }, { p: [2, 2], deg: -90, t: [-1, 0], i: 0 }]);
+  const ans = add(q(k.p, k.deg), k.t);
+  return {
+    concept: 'rigid-apply',
+    prompt: `T = (R, t) with R = ${mat(Rm(k.deg))} and t = ${vec(k.t)}. <b>What is the ${'xy'[k.i]}-coordinate of T applied to p = ${vec(k.p)}?</b>`,
+    input: { type: 'number', answer: ans[k.i] },
+    explain: `p′ = R·p + t = ${vec(q(k.p, k.deg))} + ${vec(k.t)} = ${vec(ans)}.`,
+  };
+};
+
+const pOrder = v => {
+  const k = pick(v, [{ p: [1, 1], deg: 90, t: [2, 0], i: 1 }, { p: [1, 0], deg: 90, t: [0, 2], i: 0 }, { p: [0, 1], deg: -90, t: [1, 2], i: 0 }, { p: [2, 0], deg: 90, t: [1, 1], i: 1 }, { p: [1, 2], deg: -90, t: [2, 0], i: 1 }]);
+  const ans = q(add(k.p, k.t), k.deg);
+  return {
+    concept: 'compose-order',
+    prompt: `The point <b>${vec(k.p)}</b> is first slid by ${vec(k.t)}, <b>then</b> rotated ${turn(k.deg)} about the origin. <b>What is its final ${'xy'[k.i]}-coordinate?</b>`,
+    visual: st => { st.draw = () => { st.grid(); st.dot(k.p, C.acc); }; },
+    input: { type: 'number', answer: ans[k.i] },
+    explain: `Slide first: ${vec(add(k.p, k.t))}. Then turn: ${vec(ans)}. The slide got rotated along with the point: R·(p + t) = R·p + R·t.`,
+  };
+};
+
+const pCompose = v => {
+  const k = pick(v, [{ dA: 90, tA: [1, 0], dB: 90, tB: [0, 2], i: 0 }, { dA: 90, tA: [2, 2], dB: -90, tB: [3, 0], i: 1 }, { dA: -90, tA: [0, 1], dB: 90, tB: [0, 2], i: 0 }, { dA: 90, tA: [1, 1], dB: 90, tB: [2, 1], i: 0 }, { dA: -90, tA: [3, 0], dB: -90, tB: [1, 2], i: 1 }]);
+  const ans = add(q(k.tB, k.dA), k.tA);
+  return {
+    concept: 'compose-formula',
+    prompt: `A = (R<sub>A</sub>, t<sub>A</sub>) with R<sub>A</sub> = ${mat(Rm(k.dA))}, t<sub>A</sub> = ${vec(k.tA)}.<br>B = (R<sub>B</sub>, t<sub>B</sub>) with R<sub>B</sub> = ${mat(Rm(k.dB))}, t<sub>B</sub> = ${vec(k.tB)}.<br>B is applied first, then A. <b>What is the ${'xy'[k.i]}-component of the combined translation?</b>`,
+    input: { type: 'number', answer: ans[k.i] },
+    explain: `Combined translation = R<sub>A</sub>·t<sub>B</sub> + t<sub>A</sub> = ${vec(q(k.tB, k.dA))} + ${vec(k.tA)} = ${vec(ans)}. It is where B-then-A sends the origin.`,
+  };
+};
+
+const pInverse = v => {
+  const k = pick(v, [{ deg: 90, t: [2, 0], i: 1 }, { deg: 90, t: [0, 3], i: 0 }, { deg: -90, t: [4, 0], i: 1 }, { deg: -90, t: [0, 2], i: 0 }, { deg: 90, t: [1, 2], i: 0 }]);
+  const ans = neg(q(k.t, -k.deg));
+  return {
+    concept: 'rigid-inverse',
+    prompt: `T = (R, t) with R = ${mat(Rm(k.deg))} and t = ${vec(k.t)}. Its inverse, written in the same turn-then-slide form, is (Rᵀ, t′). <b>What is the ${'xy'[k.i]}-component of t′?</b>`,
+    input: { type: 'number', answer: ans[k.i] },
+    explain: `T⁻¹ = (Rᵀ, −Rᵀt). Rᵀ is ${turn(-k.deg)}, so Rᵀt = ${vec(q(k.t, -k.deg))} and t′ = ${vec(ans)}. Check: T sends the origin to t, and T⁻¹ must bring t back: Rᵀt + t′ = (0, 0).`,
+  };
+};
+
+Reps.lesson({
+  id: 'u1-composing',
+  title: 'Composing transforms',
+  learn: [orderMatters, v => tapMove('ts', v), v => tapMove('st', v), composeOrigin, undoTiles, homogeneous],
+  problems: [pApply, pOrder, pCompose, pInverse],
+});
+</script>
+</body>
+</html>
