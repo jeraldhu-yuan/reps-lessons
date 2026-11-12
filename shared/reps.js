@@ -199,7 +199,9 @@ function lesson(def) {
   } else {
     items = [...def.learn.map(gen => ({ gen, phase: 'learn', v0: 0 })), ...def.problems.map(gen => ({ gen, phase: 'problems', v0: seed }))];
   }
-  if (saved && !(saved.done.length <= items.length)) saved = null; // the lesson changed since this was saved
+  // A saved session only fits the lesson it was saved from: same screens, same kinds of answer.
+  const shape = items.map(it => { const s = it.gen(0); return s.concept + ':' + s.input.type; }).join('|');
+  if (saved && saved.shape !== shape) saved = null;
 
   document.title = def.title;
   document.body.innerHTML = '<header><div class="bar"><i></i></div><div class="phase"><button id="back" aria-label="Previous screen">‹</button><span></span></div></header><main></main><footer><button id="go"></button></footer>';
@@ -258,7 +260,7 @@ function lesson(def) {
       reveal(res, retry);
       if (retry) attempt++;
       else { done[k] = { v: it.v0 + attempt, value: s.input.type === 'custom' ? !ok : JSON.parse(JSON.stringify(inp.value())) }; attempt = 0; }
-      post('progress', { lessonId: def.id, mode, index: done.length, total: items.length, state: { seed, attempt, done, first } });
+      post('progress', { lessonId: def.id, mode, index: done.length, total: items.length, state: { seed, attempt, done, first, shape } });
     };
   }
 

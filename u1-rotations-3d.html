@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<link rel="stylesheet" href="shared/reps.css">
+<script src="shared/reps.js"></script>
+</head>
+<body>
+<script>
+const { C, pick, mat, vec, fmt, rad, apply, mul, T, proj } = Reps;
+
+// ---- 3D helpers ----
+const AX = 'xyz', HAT = ['x̂', 'ŷ', 'ẑ'], ORD = ['first', 'second', 'third'], COL = [C.x, C.y, C.z], E = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+const hat = k => `<span class="c${AX[k]}">${HAT[k]}</span>`;
+const sc = (a, k) => a.map(x => x * k || 0), dot = (a, b) => a.reduce((s, x, i) => s + x * b[i], 0);
+const same = (a, b) => a.every((x, i) => Math.abs(x - b[i]) < 1e-6), is = (a, b) => Math.abs(a - b) < 0.02;
+const ax = u => u.findIndex(x => Math.abs(x) > 0.5);            // the axis a signed unit vector lies along
+const dn = u => (u[ax(u)] < 0 ? '−' : '+') + AX[ax(u)];         // "+y", "−z"
+const hn = u => (u[ax(u)] < 0 ? '−' : '') + hat(ax(u));
+// rotation about axis k (0 = x, 1 = y, 2 = z) with cosine c and sine s, positive by the right-hand rule
+const Rcs = (k, c, s) => { const i = (k + 1) % 3, j = (k + 2) % 3, M = E.map(r => [...r]); M[i][i] = c; M[i][j] = -s; M[j][i] = s; M[j][j] = c; return M; };
+const R3 = (k, deg) => Rcs(k, Math.cos(rad(deg)), Math.sin(rad(deg)));
+const clean = M => M.map(r => r.map(x => Math.round(x) || 0));
+const Q = (k, n = 1) => clean(R3(k, 90 * n));                   // exact quarter turns
+// one turn of deg about the direction n (Rodrigues)
+const about = (n, deg) => {
+  const L = Math.hypot(...n), u = n.map(x => x / L), c = Math.cos(rad(deg)), s = Math.sin(rad(deg)), K = [[0, -u[2], u[1]], [u[2], 0, -u[0]], [-u[1], u[0], 0]];
+  return E.map((r, i) => r.map((d, j) => c * d + s * K[i][j] + (1 - c) * u[i] * u[j]));
+};
+const turnAngle = R => Math.round(Math.acos((R[0][0] + R[1][1] + R[2][2] - 1) / 2) * 180 / Math.PI);
+
+// one fixed view for every scene: x toward lower left, y toward lower right, z up
+const YAW = -125, PITCH = 25, P = proj(YAW, PITCH), O = [0, 0], VIEW = [-3.3, 3.3, -2.5, 2.9];
+const EYE = [-Math.sin(rad(YAW)) * Math.cos(rad(PITCH)), -Math.cos(rad(YAW)) * Math.cos(rad(PITCH)), Math.sin(rad(PITCH))];
+// thin reference axes (the tooth frame), negative halves dotted
+const axes = (st, len = 2.6) => E.forEach((e, k) => {
+  st.g.globalAlpha = 0.6; st.line(P(sc(e, -len * 0.75)), O, COL[k], 1, [3, 5]); st.arrow(O, P(sc(e, len)), COL[k], 1.5); st.g.globalAlpha = 1;
+  st.label(P(sc(e, len + 0.35)), AX[k], COL[k]);
+});
+// a frame as three thick arrows, the columns of R, drawn back to front
+const triad = (st, R, len = 1.8) => E.map((e, k) => [apply(R, e), k]).sort((a, b) => dot(a[0], EYE) - dot(b[0], EYE)).forEach(([d, k]) => st.arrow(O, P(sc(d, len)), COL[k], 4.5));
+// a handpiece: handle along its own x, bur pointing along its own −z
+const handpiece = (st, R, body = C.fg, bur = C.acc) => {
+  const at = p => P(apply(R, p)), handle = () => st.line(at([0.3, 0, 0]), at([2.3, 0, 0]), body, 9), shank = () => st.line(O, at([0, 0, -1]), bur, 3.5);
+  (dot(apply(R, [1, 0, 0]), EYE) < dot(apply(R, [0, 0, -1]), EYE) ? [handle, shank] : [shank, handle]).forEach(f => f());
+  st.dot(O, body, null, 7);
+};
+// choice options "which of these points did R leave alone"
+const fixedOpts = (R, pts) => pts.map(p => {
+  const q = apply(R, p), unit = p.filter(x => x).length === 1;
+  return same(q, p) ? { html: vec(p), correct: true } : { html: vec(p),
+    why: (unit ? `${vec(p)} is the tip of ${hat(ax(p))}, which landed on ${hn(q)}.` : `The turn sends ${vec(p)} to ${vec(q)}.`) + ' A point on the axis would end exactly where it began.' };
+});
+
+// ---- learn ----
+
+const spinBur = v => {
+  const k = pick(v, [2, 0, 1]), i = (k + 1) % 3, j = (k + 2) % 3, r = 0.8, h = 3, H = 3.6;
+  const pt = (a, b, c) => { const p = [0, 0, 0]; p[i] = a; p[j] = b; p[k] = c; return p; };
+  const B = s => pt(r * Math.cos(rad(s)), r * Math.sin(rad(s)), h), B0 = pt(r, 0, h), Bq = pt(0, r, h), mid = P(pt(0, 0, 1.75));
+  let spin = 0, shown = false, x0 = 0, s0 = 0;
+  const opts = [0, 1, 2].map(a => ({ html: AX[a], correct: a === k,
+    why: a === i ? `B circles the shank axis. A quarter turn carries it from ${vec(B0)} to ${vec(Bq)}: its ${AX[i]} went from ${r} to 0.`
+      : `B's ${AX[j]} is 0 right now, but B circles the shank axis. A quarter turn carries it to ${vec(Bq)}, where ${AX[j]} is ${r}.` }));
+  opts.push({ html: 'None of them', why: 'B moves, but only around the axis, never along it. Its circle lies in a flat plane square to the shank; sliding along the shank would be a shift, not a spin.' });
+  return {
+    concept: 'rot3-axis-fixed',
+    prompt: `A bur: tip centre A at the origin, shank along <span class="c${AX[k]}">${AX[k]}</span>. Mark B sits on the shank surface at <b>${vec(B0)}</b> mm. <b>Drag to spin the bur</b> about its shank axis. <b>Which coordinate of B can no spin ever change?</b>`,
+    view: [mid[0] - 3, mid[0] + 3, mid[1] - 2.75, mid[1] + 2.75],
+    visual: st => {
+      st.draw = () => {
+        const circle = c => Array.from({ length: 40 }, (_, n) => P(pt(r * Math.cos(n * Math.PI / 20), r * Math.sin(n * Math.PI / 20), c)));
+        for (const a of [i, j]) { st.arrow(O, P(sc(E[a], 1.9)), COL[a], 1.5); st.label(P(sc(E[a], 2.25)), AX[a], COL[a]); }
+        st.line(P(pt(0, 0, -0.9)), P(pt(0, 0, H + 0.2)), COL[k], 1.5, [5, 5]); st.arrow(P(pt(0, 0, H + 0.2)), P(pt(0, 0, H + 0.7)), COL[k], 1.5); st.label(P(pt(0, 0, H + (k === 2 ? 1 : 1.3))), AX[k], COL[k]);
+        st.poly(circle(0), C.ghost); st.poly(circle(H), C.ghost);
+        for (const t of [0, 90, 180, 270]) { const c = r * Math.cos(rad(t + spin)), s = r * Math.sin(rad(t + spin)); st.line(P(pt(c, s, 0)), P(pt(c, s, H)), C.ghost, 1.5); }
+        if (shown) st.poly(circle(h), C.acc, null, 1.5);
+        st.dot(O, C.fg, null, 5); st.label(O, 'A', C.fg, [10, 16]); st.dot(P(B(spin)), C.acc, 'B');
+        st.readout(shown ? `B = ${vec(B(spin))} &nbsp; A = (0, 0, 0)` : '');
+      };
+      st.drag((w, ph) => { if (ph === 'down') { x0 = w[0]; s0 = spin; } else spin = s0 + (w[0] - x0) * 70; });
+    },
+    input: { type: 'choice', cols: 2, options: opts },
+    explain: `B circles the shank axis in a plane square to it. Its coordinate along the axis (${AX[k]} = ${h}) and its distance from the axis (${r} mm) never change. A, on the axis itself, does not move at all. Every 3D rotation is built this way: a line of fixed points, the axis, and circles around it. Keep dragging and watch the readout.`,
+    after: st => { const from = spin; st.animate(1500, t => { shown = true; spin = from + 250 * t; }); },
+  };
+};
+
+const curl = v => {
+  const { k, f } = pick(v, [{ k: 0, f: 1 }, { k: 1, f: 2 }, { k: 2, f: 0 }, { k: 0, f: 2 }, { k: 1, f: 0 }]);
+  const i = (k + 1) % 3, j = (k + 2) % 3, p = sc(E[f], 2), ans = apply(Q(k), p);
+  let a = 0;
+  const opts = [
+    { html: vec(ans), correct: true },
+    { html: vec(sc(ans, -1)), why: `That is the turn the other way, −90°. Thumb along +${AX[k]}: the fingers curl from ${hat(i)} toward ${hat(j)}, and on from ${hat(j)} toward −${hat(i)}.` },
+    { html: vec(sc(p, -1)), why: 'That is a half turn. After a quarter turn the mark is square to where it started, not opposite it.' },
+    { html: vec(sc(E[k], 2)), why: `A turn about ${AX[k]} cannot put the mark on the ${AX[k]} axis. The mark circles that axis and stays 2 mm away from it.` },
+  ];
+  return {
+    concept: 'rot3-right-hand',
+    prompt: `Right-hand rule: point your right thumb along the axis, and your fingers curl the positive way. A mark on the handpiece sits at <b>${vec(p)}</b> mm. It turns <b>+90° about ${AX[k]}</b> (thick arrow). <b>Where does it land?</b>`,
+    view: VIEW,
+    visual: st => {
+      st.draw = () => {
+        axes(st); st.arrow(O, P(sc(E[k], 2.6)), COL[k], 4.5);
+        const path = Array.from({ length: 25 }, (_, n) => P(apply(R3(k, a * n / 24), p)));
+        if (a) { path.slice(2).forEach((q, n) => st.line(path[n + 1], q, C.acc, 2)); st.dot(P(p), C.ghost, null, 5); st.dot(path[24], C.acc); }
+        else st.dot(P(p), C.acc, 'mark');
+      };
+    },
+    input: { type: 'choice', cols: 2, options: opts.map((_, n) => opts[(n + v) % 4]) },
+    explain: `Thumb along +${AX[k]}: the fingers curl from ${hat(i)} toward ${hat(j)}. So +90° about ${AX[k]} carries ${vec(p)} to <b>${vec(ans)}</b>. One cycle covers all three axes, x → y → z → x: about z, ${hat(0)} turns toward ${hat(1)} (the 2D rule); about x, ${hat(1)} toward ${hat(2)}; about y, ${hat(2)} toward ${hat(0)}. The same hand builds the frame: curl from ${hat(0)} to ${hat(1)} and the thumb is ${hat(2)}.`,
+    after: st => st.animate(1000, t => { a = 90 * t || 0.001; }),
+  };
+};
+
+const landed = v => {
+  const k = pick(v, [0, 1, 2]), i = (k + 1) % 3, j = (k + 2) % 3, R = Q(k), back = Q(k, -1);
+  const swap = T([0, 1, 2].map(a => a === k ? E[k] : a === i ? E[j] : E[i]));
+  let a = 0;
+  const opts = [
+    { html: mat(back), why: `That is the turn the other way: its ${ORD[i]} column sends ${hat(i)} to ${vec(apply(back, E[i]))}. The right-hand rule about +${AX[k]} carries ${hat(i)} to ${vec(E[j])}.` },
+    { html: mat(R), correct: true },
+    { html: mat(swap), why: `${hat(i)} lands on ${vec(E[j])}, correct. But ${hat(j)} lands on ${vec(E[i])}, and the turn carries it on to ${vec(sc(E[i], -1))}. Two arrows trading places is a mirror image, which no turn can produce.` },
+    { html: mat(Q(i)), why: `Look for the column that did not change. Here it is the ${ORD[i]}: ${hat(i)} lands on itself, so this matrix turns about ${AX[i]}, not ${AX[k]}.` },
+  ];
+  return {
+    concept: 'rot3-columns',
+    prompt: `The handpiece frame (thick arrows) turns <b>+90° about ${AX[k]}</b>. The columns of R are where ${hat(0)}, ${hat(1)} and ${hat(2)} land, in tooth coordinates. <b>Which matrix is R?</b>`,
+    view: [-3.3, 3.3, -2, 2.9],
+    visual: st => { st.draw = () => { axes(st); triad(st, R3(k, a)); }; },
+    input: { type: 'choice', cols: 2, options: opts.map((_, n) => opts[(n + v) % 4]) },
+    explain: `${hat(k)} is the axis, so it stays on ${vec(E[k])}. The right-hand rule carries ${hat(i)} to ${vec(apply(R, E[i]))} and ${hat(j)} to ${vec(apply(R, E[j]))}. Stack the three as columns: R = ${mat(R)}. Same rule as in 2D, with one more column. Read as a frame change this is R<sub>tooth,handpiece</sub>: the handpiece's axes written in tooth coordinates.`,
+    after: st => st.animate(1100, t => { a = 90 * t; }),
+  };
+};
+
+const swapOrder = v => {
+  const [a, b] = pick(v, [[2, 0], [1, 2], [2, 1], [0, 2]]), h = E[0];
+  const A1 = apply(Q(a), h), A2 = apply(Q(b), A1), B1 = apply(Q(b), h), B2 = apply(Q(a), B1);
+  const step = (k, u, w) => same(u, w) ? `the turn about ${AX[k]} leaves the handle alone, because it lies along ${AX[k]}` : `the turn about ${AX[k]} carries the handle from ${dn(u)} to ${dn(w)}`;
+  const steps = `first ${step(b, h, B1)}; then ${step(a, B1, B2)}`;
+  let t = 0;
+  const opts = [
+    { html: dn(A2), why: `That is where the first order ended. Redo it in the new order: ${steps}.` },
+    { html: dn(B2), correct: true },
+    { html: dn(h), why: `The handle does not end where it started. Follow it through both turns: ${steps}.` },
+    { html: dn(sc(B2, -1)), why: `Right line, wrong way along it. Check each turn with the right-hand rule: ${steps}.` },
+  ];
+  return {
+    concept: 'rot3-order',
+    prompt: `Turn the handpiece +90° about tooth ${AX[a]}, then +90° about tooth ${AX[b]}: its handle ${same(h, A1) ? 'stays along +x' : 'swings from +x to ' + dn(A1)}, then ${same(A1, A2) ? 'stays there' : 'swings to ' + dn(A2)}. <b>Now swap the order: ${AX[b]} first, then ${AX[a]}.</b> Where does the handle point at the end?`,
+    view: VIEW,
+    visual: st => {
+      st.draw = () => {
+        axes(st);
+        if (t) handpiece(st, mul(Q(b), Q(a)), C.ghost, C.ghost);
+        handpiece(st, t <= 0.5 ? R3(b, 180 * t) : mul(R3(a, 180 * t - 90), Q(b)));
+        if (!t) st.label(P([1.3, 0, 0]), 'handle', C.fg, [-12, -12]);
+      };
+    },
+    input: { type: 'choice', cols: 2, options: opts.map((_, n) => opts[(n + v) % 4]) },
+    explain: `In the new order, ${steps}. The handle ends along <b>${dn(B2)}</b>; the other order left it along ${dn(A2)} (grey). Same two turns, different result: rotations about different axes do not commute. As matrices, R<sub>${AX[a]}</sub>·R<sub>${AX[b]}</sub> ≠ R<sub>${AX[b]}</sub>·R<sub>${AX[a]}</sub>, and the rightmost one acts first.`,
+    after: st => st.animate(1600, x => { t = x || 0.001; }),
+  };
+};
+
+const oneTurn = v => {
+  const k = pick(v, [
+    { M: [Q(2), Q(0)], n: [1, 1, 1], off: [14, 8], pts: [[1, 0, 0], [0, 0, 1], [1, 1, 1], [1, 1, 0]] },
+    { M: [Q(0), Q(2)], n: [1, -1, 1], off: [-16, 16], pts: [[1, 1, 1], [1, -1, 1], [0, 1, 0], [1, 0, 1]] },
+    { M: [Q(2), Q(0, 2)], n: [1, 1, 0], off: [14, 8], pts: [[1, 1, 0], [0, 0, 1], [1, 0, 0], [1, -1, 0]] },
+  ]);
+  const R = clean(k.M.reduce(mul)), n = k.n, deg = turnAngle(R), cols = E.map(e => apply(R, e));
+  const sum = n.map((c, a) => c ? `${c < 0 ? '−' : '+'} ${vec(cols[a])}` : '').filter(Boolean).join(' ').replace(/^\+ /, '');
+  let t = 1, shown = false, x0 = 0, t0 = 0;
+  return {
+    concept: 'rot3-axis-angle',
+    prompt: `A few turns left the handpiece frame with ${hat(0)} on ${hn(cols[0])}, ${hat(1)} on ${hn(cols[1])} and ${hat(2)} on ${hn(cols[2])}. One single turn does the same job. Its axis is the line of points that end where they began. <b>Which point did not move?</b>`,
+    view: VIEW,
+    visual: st => {
+      st.draw = () => {
+        axes(st);
+        if (shown) st.line(P(sc(n, -2.8 / Math.hypot(...n))), P(sc(n, 2.8 / Math.hypot(...n))), C.acc, 2.5);
+        triad(st, shown ? about(n, deg * t) : R);
+        if (shown) { st.dot(P(n), C.acc, null, 5); st.label(P(n), vec(n), C.acc, k.off); }
+      };
+      st.drag((w, ph) => { if (!shown) return; if (ph === 'down') { x0 = w[0]; t0 = t; } else t = Math.max(0, Math.min(1, t0 + (w[0] - x0) / 3)); });
+    },
+    input: { type: 'choice', cols: 2, options: fixedOpts(R, k.pts) },
+    explain: `Add up the landed arrows for ${vec(n)}: ${sum} = ${vec(n)}. It did not move, so the axis runs through it (yellow). The whole change is <b>one turn of ${deg}°</b> about that line (drag the picture to run it back and forth): do it ${360 / deg} times and every arrow is home. This holds for every change of orientation, however many turns built it: one axis, one angle. That pair is the <b>axis-angle</b> form, and its angle is the honest size of an orientation error.`,
+    after: st => { shown = true; st.animate(1500, x => { t = x; }); },
+  };
+};
+
+// ---- problems ----
+
+const SCR = { right: [1, 0, 0], left: [-1, 0, 0], up: [0, 1, 0], down: [0, -1, 0], out: [0, 0, 1], in: [0, 0, -1] };
+const SAY = { right: 'To the right', left: 'To the left', up: 'Up the screen', down: 'Down the screen', out: 'Out of the screen, toward you', in: 'Into the screen, away from you' };
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const scr = u => SAY[Object.keys(SCR).find(n => same(SCR[n], u))];
+
+// two axes of a frame are given as screen directions; find the third
+const handFrame = (lead, given, tail) => {
+  const m = [0, 1, 2].find(a => !(a in given)), [g1, g2] = [0, 1, 2].filter(a => a in given), u = (m + 1) % 3, w = (m + 2) % 3;
+  const ans = cross(SCR[given[u]], SCR[given[w]]), rule = `Curl your right hand's fingers from ${hat(u)} (${given[u]}) to ${hat(w)} (${given[w]}). The thumb is ${hat(m)}, and it points ${scr(ans).toLowerCase()}`;
+  return {
+    prompt: `${lead} ${hat(g1)} points ${given[g1]} and ${hat(g2)} points ${given[g2]}. The frame is right-handed. <b>Which way does ${hat(m)} point?</b>`,
+    input: { type: 'choice', options: [
+      { html: scr(sc(ans, -1)), why: `That is the left-handed answer: it is where a left hand's thumb points when its fingers curl from ${hat(u)} to ${hat(w)}.` },
+      { html: scr(ans), correct: true },
+      { html: scr(sc(SCR[given[w]], -1)), why: `${hat(m)} has to be square to both of the other axes. That direction is just −${hat(w)}.` },
+      { html: 'Either way is right-handed', why: 'Once two axes are fixed there are only two candidates for the third, and they are mirror images. Right-handed picks one of them; the other is the left-handed frame.' }] },
+    explain: `${rule}. ${tail}x, y, z always come in this cyclic order, and the same hand gives the positive turn about each of them.`,
+  };
+};
+// which way a positive turn looks from each end of the axis
+const handView = toward => ({
+  prompt: (toward ? 'The bur\'s shank axis, +z, points straight out of the screen at you.' : 'You look along the bur\'s shank axis from behind: +z points into the screen, away from you.')
+    + ' The bur turns by a positive angle about +z. <b>From where you sit, which way does it turn?</b>',
+  input: { type: 'choice', options: [
+    { html: 'Clockwise', correct: !toward, why: 'Thumb toward your face: you see the fingers curl counter-clockwise. Clockwise is what the same turn looks like from behind.' },
+    { html: 'Counter-clockwise', correct: toward, why: 'Counter-clockwise is what you see only when the axis points at you. Here the thumb points away from you, and from behind the same curl runs clockwise.' },
+    { html: 'Either: the sign is a free choice', why: 'The right-hand rule leaves no choice. Once the axis direction is given, the positive sense is fixed. Only its appearance differs between the two ends of the axis.' }] },
+  explain: 'Thumb along the axis, fingers curl the positive way. With the axis pointing at you that curl looks counter-clockwise, which is the 2D rule. From the other end the very same turn looks clockwise. "Counter-clockwise positive" always means: seen with the axis pointing at you.',
+});
+// where an axis arrow goes under a positive quarter turn
+const handTurn = (k, f) => {
+  const i = (k + 1) % 3, j = (k + 2) % 3, ans = apply(Q(k), E[f]);
+  return {
+    prompt: `A handpiece frame starts lined up with the tooth frame, then turns <b>+90° about ${AX[k]}</b>. <b>Along which tooth axis does its ${hat(f)} point now?</b>`,
+    input: { type: 'choice', cols: 2, options: [
+      { html: dn(sc(ans, -1)), why: `That is the −90° turn. Thumb along +${AX[k]}: the fingers curl from ${hat(i)} toward ${hat(j)}, and on from ${hat(j)} toward −${hat(i)}.` },
+      { html: dn(E[k]), why: `Nothing off the ${AX[k]} axis can land on it in a turn about ${AX[k]}. ${hat(f)} stays square to the axis.` },
+      { html: dn(ans), correct: true },
+      { html: dn(sc(E[f], -1)), why: 'That is a half turn. A quarter turn leaves the arrow square to where it started.' }] },
+    explain: `Thumb along +${AX[k]}: the fingers curl from ${hat(i)} toward ${hat(j)}, and on toward −${hat(i)}. So ${hat(f)} ends along ${dn(ans)}. The cycle x → y → z → x gives every case: about x, y turns toward z; about y, z toward x; about z, x toward y.`,
+  };
+};
+const pHand = v => ({ concept: 'rot3-right-hand', ...pick(v, [
+  () => handFrame('In the intraoral camera\'s image on your screen,', { 0: 'right', 1: 'down' }, 'Into the screen is the way the camera looks, so z is depth in front of the lens. This is the usual camera frame: x right, y down, z forward. '),
+  () => handView(true),
+  () => handTurn(1, 2),
+  () => handFrame('A tooth frame is drawn on your screen:', { 0: 'right', 1: 'up' }, ''),
+  () => handView(false),
+  () => handTurn(0, 2),
+  () => handFrame('A handpiece frame is drawn on your screen:', { 0: 'right', 2: 'up' }, ''),
+])() });
+
+const CYC = [[0, 0, 1], [1, 0, 0], [0, 1, 0]];
+const pColumns = v => {
+  const k = pick(v, [
+    { R: Rcs(2, 0.8, 0.6), p: [5, 5, 2], i: 0 },
+    { R: Rcs(0, 0.6, 0.8), i: 1 },
+    { R: Rcs(0, 0.8, 0.6), p: [3, 5, 10], i: 2 },
+    { R: Rcs(1, 0.6, 0.8), p: [5, 4, 5], i: 0 },
+    { R: Rcs(1, 0.8, 0.6), i: 0 },
+    { R: CYC, p: [2, 5, 7], i: 1 },
+  ]);
+  const { R, p, i } = k, cols = E.map(e => apply(R, e)), other = (x, q) => q.findIndex((c, j) => j !== i && is(x, c));
+  if (!p) return {   // read one column
+    concept: 'rot3-columns',
+    prompt: `R = ${mat(R)} turns the handpiece. Before the turn its bur shank pointed along ${hat(2)} = (0, 0, 1). <b>What is the ${AX[i]}-component of the shank direction after the turn?</b>`,
+    input: { type: 'number', answer: cols[2][i],
+      why: x => is(x, R[2][i]) ? `That entry sits in the third row. Where ${hat(2)} lands is the third <i>column</i>: ${vec(cols[2])}.`
+        : is(x, E[2][i]) ? `That is ${hat(2)} before the turn. After it, ${hat(2)} is the third column of R: ${vec(cols[2])}.`
+        : other(x, cols[2]) >= 0 ? `That is the ${AX[other(x, cols[2])]}-component of where ${hat(2)} lands, ${vec(cols[2])}. The question asks for ${AX[i]}.`
+        : Math.abs(x) > 1 ? 'A direction is a unit arrow, and a turn keeps it one, so none of its components can be larger than 1. Nothing needs multiplying here: the answer is a single entry of R.'
+        : `That is not an entry of the column where ${hat(2)} lands. The shank rides on ${hat(2)}, so no arithmetic is needed, only the right column.` },
+    explain: `The columns of R are where ${hat(0)}, ${hat(1)} and ${hat(2)} land. The shank rode on ${hat(2)}, so it now points along the third column, ${vec(cols[2])}.`,
+  };
+  const q = apply(R, p), qt = apply(T(R), p), terms = p.map((c, j) => `${c}·${R[i][j] < 0 ? '(' + fmt(R[i][j]) + ')' : fmt(R[i][j])}`).join(' + ');
+  const recipe = `R·p = ${p[0]}·(column 1) + ${p[1]}·(column 2) + ${p[2]}·(column 3), and its ${AX[i]}-part is ${terms}.`;
+  return {
+    concept: 'rot3-columns',
+    prompt: `R = ${mat(R)} turns the handpiece. A mark at p = <b>${vec(p)}</b> mm rides along. <b>What is the ${AX[i]}-coordinate of R·p?</b>`,
+    input: { type: 'number', answer: q[i],
+      why: x => is(x, qt[i]) ? `That is the ${AX[i]}-coordinate of Rᵀ·p, the turn backwards: you paired p with the ${ORD[i]} column where it should meet the ${ORD[i]} row. ${recipe}`
+        : is(x, p[i]) ? `That is the ${AX[i]}-coordinate before the turn. ${recipe}`
+        : other(x, q) >= 0 ? `That is the ${AX[other(x, q)]}-coordinate of R·p. ${recipe}`
+        : is(Math.abs(x), Math.abs(q[i])) || is(x, p.reduce((s, c, j) => s + c * Math.abs(R[i][j]), 0)) ? `Check the signs. ${recipe}`
+        : `p keeps its three amounts and uses the landed arrows. ${recipe}` },
+    explain: `R·p = ${p[0]}·${vec(cols[0])} + ${p[1]}·${vec(cols[1])} + ${p[2]}·${vec(cols[2])} = <b>${vec(q)}</b>. Each column is where one unit arrow landed, and p rides along with the same three amounts.`,
+  };
+};
+
+const pSpin = v => {
+  const r = pick(v, [0.8, 0.8, 0.8, 0.6, 0.8]), ang = pick(v, [137, 180, 73, 90, 200]), h = 6, tip = [2, 5, 3];
+  const k = pick(v, [
+    { q: `Between two video frames the bur spins <b>${ang}°</b> about its own shank axis and nothing else moves. <b>How far does the tip centre, which lies on that axis, travel?</b>`, ans: 0,
+      why: () => 'A point travels in a spin only if it has a circle to go round. The tip centre sits on the axis itself, where that circle has radius 0, whatever the angle.',
+      say: 'The tip centre is on the axis, so it travels 0 mm.' },
+    { q: `A scratch on the bur's shank is <b>${r} mm</b> from the shank axis. The bur spins exactly half a turn about that axis. <b>How far is the scratch from where it started?</b>`, ans: 2 * r,
+      why: x => is(x, 0) ? 'Half a turn is not a full turn. The scratch is off the axis, so it moved: it is now on the opposite side.'
+        : is(x, r) ? `${r} mm is its distance from the axis, which is unchanged. But it is now on the opposite side of the axis: ${r} + ${r}.`
+        : is(x, Math.PI * r) ? `That is the length of the half circle it travelled. The straight-line distance is across the circle: ${r} + ${r}.`
+        : `After half a turn the scratch is on the opposite side of the axis, still ${r} mm from it. Straight across is ${r} + ${r}.`,
+      say: `The scratch circles the axis at ${r} mm. Half a turn puts it straight across: ${fmt(2 * r)} mm away.` },
+    { q: `A scratch on the bur's shank is ${r} mm from the shank axis and <b>${h} mm</b> up the shank from the tip. The bur spins ${ang}° about its shank axis. <b>How far up the shank from the tip is the scratch now?</b>`, ans: h,
+      why: x => is(x, r) ? `${r} mm is its distance from the axis, which is also unchanged. The question asks how far up the shank it sits.`
+        : `The scratch circles the axis in a plane square to the shank. Nothing in a spin moves it along the shank, so the ${ang}° does not enter.`,
+      say: `The scratch circles in a plane square to the shank, so it is still ${h} mm up.` },
+    { q: `A scratch on the bur's shank is <b>${r} mm</b> from the shank axis. The bur spins a quarter turn about that axis. <b>How far is the scratch from the axis now?</b>`, ans: r,
+      why: x => is(x, r * Math.SQRT2) ? 'That is how far the scratch moved, straight from start to finish. Its distance from the axis is the radius of its circle.'
+        : is(x, 0) ? 'Only points on the axis are at distance 0, and a spin never moves a point onto the axis.'
+        : 'The scratch moves on a circle centred on the axis. Every point of a circle is the same distance from its centre.',
+      say: `The scratch moves on a circle centred on the axis, so it stays ${r} mm from it.` },
+    { q: `In the tooth frame the bur's tip centre is at <b>${vec(tip)}</b> mm. The bur spins ${ang}° about its own shank axis, which passes through the tip centre. <b>What is the tip centre's y-coordinate in the tooth frame afterwards?</b>`, ans: tip[1],
+      why: () => `The spin axis passes through the tip centre, so the tip centre is one of the fixed points. It is still at ${vec(tip)} in the tooth frame, whatever the angle.`,
+      say: `The tip centre is on the axis, so it stays at ${vec(tip)}.` },
+  ]);
+  return {
+    concept: 'rot3-axis-fixed',
+    prompt: k.q,
+    input: { type: 'number', answer: k.ans, unit: 'mm', why: k.why },
+    explain: `${k.say} Points on the rotation axis stay exactly where they are; every other point circles the axis, keeping its distance from it and its place along it. For your pipeline: a smooth shank looks the same after any spin about its own axis and its tip centre does not move, so the tip's path relative to the tooth never needs the spin angle.`,
+  };
+};
+
+const pUndo = v => {
+  const [a, b, undo] = pick(v, [[2, 0, 0], [0, 1, 1], [1, 2, 0], [0, 2, 1], [1, 0, 0], [2, 1, 1]]);   // turn about a first, then b
+  const Rn = (k, t) => `R<sub>${AX[k]}</sub>${t ? 'ᵀ' : ''}`, lo = Math.min(a, b), hi = Math.max(a, b);
+  const tiles = [[lo, 0], [hi, 0], [lo, 1], [hi, 1]], at = (k, t) => tiles.findIndex(x => x[0] === k && x[1] === t);
+  const asked = mul(Q(b), Q(a)), swapped = mul(Q(a), Q(b)), e = E.find(u => !same(apply(asked, u), apply(swapped, u)));
+  const differ = `sends ${hat(ax(e))} to ${hn(apply(swapped, e))}, the asked one sends it to ${hn(apply(asked, e))}`;
+  const lead = `${Rn(lo)} is a +90° turn about tooth ${AX[lo]}, and ${Rn(hi)} one about tooth ${AX[hi]}. `;
+  return {
+    concept: 'rot3-order',
+    prompt: lead + (undo ? `The handpiece was turned about <b>${AX[a]} first, then ${AX[b]}</b>. <b>Build the matrix that puts it back.</b>` : `The handpiece turns about <b>${AX[a]} first, then ${AX[b]}</b>. <b>Build the one matrix that does both.</b>`) + ' The rightmost matrix touches a point first.',
+    input: {
+      type: 'order', tiles: tiles.map(x => Rn(...x)), answer: undo ? [at(a, 1), at(b, 1)] : [at(b, 0), at(a, 0)],
+      why: o => {
+        const ts = o.map(n => tiles[n]), fwd = ts.find(x => !x[1]), bwd = ts.find(x => x[1]);
+        if (ts[0][0] === ts[1][0]) return `${Rn(...ts[0])} and ${Rn(...ts[1])} cancel each other. Together they do nothing, which neither makes both turns nor undoes them.`;
+        if (!undo) return bwd ? `${Rn(...bwd)} is that turn run backwards, −90°. Both turns here go forwards, so nothing is transposed.`
+          : `Read right to left: that product turns about ${AX[b]} first. The rightmost matrix touches a point first, so the first turn, ${Rn(a)}, goes on the right. The order matters: your product ${differ}.`;
+        return fwd ? `${Rn(...fwd)} turns the handpiece forwards again. Undoing a turn is the same turn backwards, and for a rotation that is its transpose.`
+          : `Right two pieces, wrong order. Read right to left: that undoes the ${AX[a]} turn first, but the ${AX[b]} turn was made last and is still in the way. Undo the last turn first: ${Rn(b, 1)} goes on the right.`;
+      },
+    },
+    explain: undo ? `R = ${Rn(b)}·${Rn(a)}, so R⁻¹ = <b>${Rn(a, 1)}·${Rn(b, 1)}</b>: each turn run backwards (its transpose), the last turn undone first. Rotations about different axes do not commute, so undoing them in the order they were made does not bring the handpiece home.`
+      : `<b>R = ${Rn(b)}·${Rn(a)}</b>: the first turn sits on the right. The other order is a different rotation: it ${differ}. Rotations about different axes do not commute.`,
+  };
+};
+
+const pAxis = v => {
+  const k = pick(v, [
+    { M: [Q(2), Q(0)], pts: [[1, 0, 0], [1, 1, 1], [0, 0, 1], [1, 1, 0]] },
+    { M: [Q(0), Q(2)], pts: [[1, -1, 1], [0, 0, 1], [1, 1, 1], [1, -1, 0]] },
+    { M: [Q(2), Q(0, 2)], pts: [[0, 0, 1], [1, -1, 0], [1, 1, 1], [1, 1, 0]] },
+    { M: [Q(2), Q(1)], pts: [[1, 1, 1], [0, 1, 0], [1, -1, 1], [1, -1, -1]] },
+    { M: [Q(0)], pts: [[0, 1, 1], [1, 1, 1], [1, 0, 0], [0, 1, 0]] },
+  ]);
+  const R = clean(k.M.reduce(mul)), n = k.pts.find(p => same(apply(R, p), p));
+  return {
+    concept: 'rot3-axis-angle',
+    prompt: `Between two video frames the handpiece's orientation changed by R = ${mat(R)}. Whatever happened in between, the net change is one turn about one axis. <b>Which point lies on that axis?</b>`,
+    input: { type: 'choice', cols: 2, options: fixedOpts(R, k.pts) },
+    explain: `R·${vec(n)} = ${vec(n)}: that point did not move, so the axis is the line through it and the origin. The whole change is a single turn of ${turnAngle(R)}° about that line. Every rotation matrix holds one axis and one angle like this, however many turns produced it.`,
+  };
+};
+
+Reps.lesson({
+  id: 'u1-rotations-3d',
+  title: 'Rotations in 3D',
+  learn: [spinBur, curl, landed, swapOrder, oneTurn],
+  problems: [pHand, pColumns, pSpin, pUndo, pAxis],
+});
+</script>
+</body>
+</html>

@@ -1,41 +1,23 @@
-{
-  "version": 1,
-  "passScore": 0.7,
-  "shared": ["shared/reps.js", "shared/reps.css"],
+{"version": 1, "passScore": 0.7, "shared": ["shared/reps.js", "shared/reps.css"],
   "units": [
-    { "id": 0, "title": "Baseline typodont clip", "lab": [
-      { "key": "dry", "label": "Frames with shank visible, dry", "unit": "%" },
-      { "key": "spray", "label": "Frames with shank visible, spray", "unit": "%" } ] },
-    { "id": 1, "title": "Rigid transforms", "lab": [
-      { "key": "roundtrip", "label": "Max round-trip error of your transform code (T·T⁻¹ on random poses)", "unit": "mm" } ] },
-    { "id": 2, "title": "Camera model and calibration", "lab": [
-      { "key": "reproj", "label": "Calibration reprojection RMS", "unit": "px" } ] },
-    { "id": 3, "title": "Synthetic renderer", "lab": [
-      { "key": "render", "label": "Rendered bur tip vs projected ground truth, max error", "unit": "px" } ] },
-    { "id": 4, "title": "PnP and fiducial ground truth", "lab": [
-      { "key": "pnp", "label": "PnP translation error vs known pose", "unit": "mm" } ] },
-    { "id": 5, "title": "Bur tracking: shank axis + width to 5-DoF pose", "lab": [
-      { "key": "tip", "label": "Bur tip error on clean synthetic renders", "unit": "mm" } ] },
-    { "id": 6, "title": "Tooth STL-to-image registration", "lab": [
-      { "key": "reg", "label": "Registration surface error on synthetic renders", "unit": "mm" } ] },
-    { "id": 7, "title": "Combined trajectory, smoothing, eval script", "lab": [
-      { "key": "traj", "label": "Tip trajectory RMSE in the tooth frame", "unit": "mm" } ] },
-    { "id": 8, "title": "Degraded renders and real clips", "lab": [
-      { "key": "degraded", "label": "Tip trajectory RMSE on degraded renders", "unit": "mm" } ] },
-    { "id": 9, "title": "Pre/post scan difference as swept-volume constraint", "lab": [
-      { "key": "swept", "label": "Swept volume vs scan difference, IoU", "unit": "%" } ] },
-    { "id": 10, "title": "Data spec for a dental dataset", "lab": [
-      { "key": "episodes", "label": "Episodes exported that pass your spec validator", "unit": "episodes" } ] }
+    {"id": 0, "title": "Baseline typodont clip", "lab": [{"key": "dry", "label": "Frames with shank visible, dry", "unit": "%"}, {"key": "spray", "label": "Frames with shank visible, spray", "unit": "%"}]},
+    {"id": 1, "title": "Rigid transforms", "lab": [{"key": "roundtrip", "label": "Max round-trip error of your transform code (T·T⁻¹ on random poses)", "unit": "mm"}]},
+    {"id": 2, "title": "Camera model and calibration", "lab": [{"key": "reproj", "label": "Calibration reprojection RMS", "unit": "px"}]},
+    {"id": 3, "title": "Synthetic renderer", "lab": [{"key": "render", "label": "Rendered bur tip vs projected ground truth, max error", "unit": "px"}]},
+    {"id": 4, "title": "PnP and fiducial ground truth", "lab": [{"key": "pnp", "label": "PnP translation error vs known pose", "unit": "mm"}]},
+    {"id": 5, "title": "Bur tracking: shank axis + width to 5-DoF pose", "lab": [{"key": "tip", "label": "Bur tip error on clean synthetic renders", "unit": "mm"}]},
+    {"id": 6, "title": "Tooth STL-to-image registration", "lab": [{"key": "reg", "label": "Registration surface error on synthetic renders", "unit": "mm"}]},
+    {"id": 7, "title": "Combined trajectory, smoothing, eval script", "lab": [{"key": "traj", "label": "Tip trajectory RMSE in the tooth frame", "unit": "mm"}]},
+    {"id": 8, "title": "Degraded renders and real clips", "lab": [{"key": "degraded", "label": "Tip trajectory RMSE on degraded renders", "unit": "mm"}]},
+    {"id": 9, "title": "Pre/post scan difference as swept-volume constraint", "lab": [{"key": "swept", "label": "Swept volume vs scan difference, IoU", "unit": "%"}]},
+    {"id": 10, "title": "Data spec for a dental dataset", "lab": [{"key": "episodes", "label": "Episodes exported that pass your spec validator", "unit": "episodes"}]}
   ],
   "lessons": [
-    { "id": "u1-rotations", "unit": 1, "title": "Rotations", "minutes": 8, "prerequisites": [],
-      "path": "u1-rotations.html",
-      "concepts": ["rot-apply-2d", "rot-preserves", "rot-columns", "rot-valid", "rot-inverse", "rot-axis-3d"] },
-    { "id": "u1-composing", "unit": 1, "title": "Composing transforms", "minutes": 9, "prerequisites": ["u1-rotations"],
-      "path": "u1-composing.html",
-      "concepts": ["compose-order", "rigid-apply", "compose-formula", "rigid-inverse", "homogeneous"] },
-    { "id": "u1-frames", "unit": 1, "title": "Changing frames", "minutes": 9, "prerequisites": ["u1-composing"],
-      "path": "u1-frames.html",
-      "concepts": ["frame-coords", "frame-convert", "frame-inverse", "frame-chain", "frame-relative"] }
+    {"id": "u1-rotations", "unit": 1, "title": "Rotations", "minutes": 8, "prerequisites": [], "path": "u1-rotations.html", "concepts": ["rot-apply-2d", "rot-preserves", "rot-columns", "rot-valid", "rot-inverse", "rot-axis-3d"]},
+    {"id": "u1-composing", "unit": 1, "title": "Composing transforms", "minutes": 9, "prerequisites": ["u1-rotations"], "path": "u1-composing.html", "concepts": ["compose-order", "rigid-apply", "compose-formula", "rigid-inverse", "homogeneous"]},
+    {"id": "u1-frames", "unit": 1, "title": "Changing frames", "minutes": 9, "prerequisites": ["u1-composing"], "path": "u1-frames.html", "concepts": ["frame-coords", "frame-convert", "frame-inverse", "frame-chain", "frame-relative"]},
+    {"id": "u1-rotations-3d", "unit": 1, "title": "Rotations in 3D", "minutes": 9, "prerequisites": ["u1-frames"], "path": "u1-rotations-3d.html", "concepts": ["rot3-right-hand", "rot3-columns", "rot3-axis-fixed", "rot3-order", "rot3-axis-angle"]},
+    {"id": "u1-se3", "unit": 1, "title": "Poses: rotation plus position", "minutes": 10, "prerequisites": ["u1-rotations-3d"], "path": "u1-se3.html", "concepts": ["pose-apply", "pose-matrix", "pose-compose", "pose-inverse", "pose-relative"]},
+    {"id": "u2-pinhole", "unit": 2, "title": "The pinhole camera", "minutes": 9, "prerequisites": ["u1-se3"], "path": "u2-pinhole.html", "concepts": ["pin-similar-triangles", "pin-depth-scale", "pin-focal", "pin-principal", "pin-ray"]}
   ]
 }

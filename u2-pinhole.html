@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<link rel="stylesheet" href="shared/reps.css">
+<script src="shared/reps.js"></script>
+</head>
+<body>
+<script>
+const { C, fmt, pick, add, sub } = Reps;
+const eq = (a, b) => Math.abs(a - b) < 0.011;
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const num = n => (n < 0 ? '−' : '') + fmt(Math.abs(n));      // a real minus sign
+const par = n => n < 0 ? `(${num(n)})` : fmt(n);                // for use inside a product
+const pt = p => '(' + p.map(num).join(', ') + ')';            // like Reps.vec, with real minus signs
+const D = 1.6;                                               // bur shank diameter, mm
+
+// ---- drawing. Side-view screens are a slice through the optical axis: stage points are [Z, X] in mm, pinhole at the origin ----
+const small = (st, p, s, color = C.dim, off = [0, 0]) => {
+  const g = st.g, [x, y] = st.px(p); g.font = '12px -apple-system, system-ui, sans-serif'; g.fillStyle = color;
+  g.textAlign = off[0] < 0 ? 'right' : off[0] > 0 ? 'left' : 'center'; g.textBaseline = 'middle'; g.fillText(s, x + off[0], y + off[1]);
+};
+const disc = (st, p, r, stroke, fill, dash) => {
+  const g = st.g, [x, y] = st.px(p); g.beginPath(); g.setLineDash(dash || []); g.arc(x, y, r * st.s, 0, 7);
+  if (fill) { g.fillStyle = fill; g.fill(); } g.strokeStyle = stroke; g.lineWidth = 2; g.stroke(); g.setLineDash([]);
+};
+const tooth = (st, z, x, s = 1) => st.poly([[0.3, -0.3], [1.2, 0.5], [2.3, 0.1], [3.3, 0.6], [4.3, -0.4], [4.6, -3.5], [3.8, -9], [1, -9], [0.1, -3.5]]
+  .map(([a, b]) => [z + a, x + s * b]), C.ghost, 'rgba(255,255,255,.06)', 1.5);
+// optical axis, camera body behind the pinhole, depth ticks along the bottom edge
+const say = (st, html) => st.readout(`<div style="padding-bottom:10px">${html}</div>`);
+const camera = (st, ticks = true) => {
+  const [, x1, y0] = st.view;
+  st.line([0, 0], [x1, 0], C.ghost, 1, [3, 5]);
+  st.poly([[-1.7, -1.1], [0, -1.1], [0, 1.1], [-1.7, 1.1]], C.ghost, 'rgba(255,255,255,.06)', 1.5); st.dot([0, 0], C.fg, null, 3);
+  if (ticks) for (let z = 5; z < x1; z += 5) { st.line([z, y0], [z, y0 + 0.25], C.dim, 1); small(st, [z, y0], (z === 5 ? 'Z = ' : '') + z + (z + 5 >= x1 ? ' mm' : ''), C.dim, [0, -13]); }
+};
+
+// ---- learn ----
+
+const flip = v => {
+  const { X, Z, f } = pick(v, [{ X: 4, Z: 8, f: 4 }, { X: -2, Z: 6, f: 3 }, { X: 2, Z: 8, f: 4 }, { X: -4, Z: 6, f: 3 }]);
+  const ans = -f * X / Z, s = Math.sign(X), aX = Math.abs(X);
+  let m = 0, k = 0;
+  return {
+    concept: 'pin-similar-triangles',
+    prompt: `Side view of the simplest camera: a dark box with a pinhole in front and a sensor on the back wall. Light from the bur tip travels straight through the hole. <b>Drag the yellow mark to where it hits the sensor.</b>`,
+    view: [-6, 12, -5.5, 5.5],
+    visual: st => {
+      st.draw = () => {
+        st.grid(false);
+        tooth(st, Z, X, s); st.line([Z, X], [Z + 2.2, X + 3.2 * s], C.ghost, 7);
+        st.line([0, 0], [12, 0], C.ghost, 1, [3, 5]);
+        for (const e of [-4, 4]) { st.line([-f, e], [0, e], C.ghost, 3); st.line([0, e], [0, 0.3 * Math.sign(e)], C.ghost, 3); }
+        st.line([-f, -4], [-f, 4], C.fg, 4); small(st, [-f, 4 * s], 'sensor', C.dim, [0, -11 * s]);
+        st.line([Z, X], [Z, 0], C.x, 1.5, [4, 4]); small(st, [Z, X / 2], aX + ' mm', C.x, [8, 0]);
+        small(st, [(f + Z) / 2, 0], Z + ' mm', C.z, [0, 13 * s]); small(st, [-f / 2, 0], f + ' mm', C.z, [0, -13 * s]);
+        st.line([Z, X], [0, 0], C.fg, 1.5); st.dot([Z, X], C.fg, null, 5); st.label([Z, X], 'bur tip', C.fg, [-10, -12 * s]);
+        if (k > 0) { const a = Math.min(1, k * 2); st.line([0, 0], [-f * a, ans * a], C.fg, 1.5); }
+        if (k > 0.5) {
+          st.g.globalAlpha = (k - 0.5) * 2;
+          st.line([f, -3], [f, 3], C.acc, 2, [5, 5]); st.dot([f, -ans], C.acc, null, 5); small(st, [f, -3 * s], 'image plane', C.acc, [0, 11 * s]);
+          st.g.globalAlpha = 1;
+        }
+        st.ring([-f, m], C.acc, 11); st.dot([-f, m], C.acc, null, 6);
+      };
+      st.drag(w => { m = clamp(Math.round(w[1]), -4, 4) || 0; });
+    },
+    input: {
+      type: 'custom',
+      check: () => ({
+        correct: m === ans,
+        why: m === 0 ? 'Slide the yellow mark along the sensor first. The tip is off the axis, so its light cannot arrive on the axis.'
+          : m === -ans ? 'Right distance from the axis, wrong side. The ray is heading toward the axis when it reaches the hole and cannot turn back there: it carries on to the other side.'
+          : Math.sign(m) !== Math.sign(ans) ? 'Wrong side of the axis. Lay a straight edge from the tip through the hole: it comes out on the opposite side.'
+          : m === -X ? `Correct side, but you kept the full ${aX} mm. The tip is ${Z} mm in front of the hole and the sensor only ${f} mm behind it, so the ray has less distance to spread.`
+          : `Correct side. Now the amount: from tip to hole the ray closes ${aX} mm over ${Z} mm, which is ${fmt(aX / Z)} mm per mm. It keeps that slope for the ${f} mm from hole to sensor.`,
+      }),
+      solve: wrong => { m = wrong ? -ans : ans; },
+    },
+    explain: `Light keeps a straight line, so the triangle in front of the hole (${aX} tall, ${Z} long) and the one inside the box (${f} long) have the same shape: x/f = X/Z. The mark sits f·X/Z = ${f}·${aX}/${Z} = ${fmt(Math.abs(ans))} mm from the axis, on the far side: a pinhole image is upside down. The usual fix is to draw the image plane the same distance f <i>in front</i> of the hole (dashed). Same triangles, no flip: <b>x = f·X/Z</b>. f is the focal length.`,
+    after: st => st.animate(1400, t => { k = t; }),
+  };
+};
+
+const shrink = v => {
+  const { f, Z1, Z2 } = pick(v, [{ f: 400, Z1: 8, Z2: 16 }, { f: 300, Z1: 6, Z2: 12 }, { f: 400, Z1: 10, Z2: 5 }, { f: 300, Z1: 5, Z2: 15 }]);
+  const w = Z => f * D / Z, d = f / 100, r = D / 2, far = Z2 > Z1, kk = far ? Z2 / Z1 : Z1 / Z2;
+  let z = Z1, open = false;
+  return {
+    concept: 'pin-depth-scale',
+    prompt: `Now the image plane sits in front of the pinhole and is read in pixels, so f is in pixels too: <b>${f} px</b>. A ${D} mm bur shank at Z = ${Z1} mm images ${f} × ${D} ÷ ${Z1} = <b>${fmt(w(Z1))} px</b> wide. It moves to <b>Z = ${Z2} mm</b>. <b>How wide is its image now?</b>`,
+    view: [-2, 18, -4, 4],
+    visual: st => {
+      st.draw = () => {
+        camera(st);
+        st.line([d, -2.6], [d, 2.6], C.fg, 2); small(st, [d, 2.6], 'image plane', C.dim, [0, -10]);
+        if (z !== Z1) disc(st, [Z1, 0], r, C.ghost, null, [3, 3]);
+        if (z === Z1) { disc(st, [Z2, 0], r, C.acc, null, [3, 3]); small(st, [Z2, r], '?', C.acc, [0, -10]); }
+        for (const e of [-r, r]) st.line([z, e], [0, 0], C.fg, 1);
+        disc(st, [z, 0], r, C.fg, 'rgba(255,255,255,.15)'); small(st, [z, -r], D + ' mm', C.fg, [0, 11]);
+        st.line([d, -d * r / z], [d, d * r / z], C.acc, 5);
+        say(st, `shank at Z = ${fmt(Math.round(z * 2) / 2)} mm → image ${Math.round(w(z))} px wide`);
+      };
+      st.drag(p => { if (open) z = clamp(Math.round(p[0] * 2) / 2, d + 1, 17); });
+    },
+    input: {
+      type: 'number', answer: w(Z2), unit: 'px',
+      why: x => eq(x, w(Z1) * (far ? kk : 1 / kk)) ? (far ? 'It moved away, so its image shrinks. You scaled it up: you multiplied by the depth ratio instead of dividing.' : 'It moved closer, so its image grows. You scaled it down: you divided by the depth ratio instead of multiplying.')
+        : eq(x, w(Z1)) ? 'The shank itself did not change, but its image is not its real size. The rays from its two edges meet at the pinhole at a different angle from the new depth.'
+        : eq(x, D) ? 'That is the real diameter in mm. The question is its width in the image, in pixels.'
+        : `Same recipe as the worked one with the new depth: ${f} × ${D} ÷ ${Z2}. Or compare depths: Z went from ${Z1} to ${Z2}, and Z is in the denominator.`,
+    },
+    explain: `Width in the image = f·D/Z. Depth is in the denominator: ${fmt(kk)}× ${far ? 'as far' : 'closer'}, ${fmt(kk)}× ${far ? 'smaller' : 'bigger'}. Run it backwards and it is a depth gauge: the shank is known to be ${D} mm across, you measure its width in pixels, and Z = f·D/width. That is how one camera gives your pipeline the bur's depth, fresh in every frame, with no fixed camera-to-bur offset assumed. Drag the shank to try other depths.`,
+    after: st => st.animate(1100, t => { z = Z1 + (Z2 - Z1) * t; if (t === 1) open = true; }),
+  };
+};
+
+const ray = v => {
+  const k = pick(v, [
+    { f: 400, x: 200, ask: 'What do all the spots that work have in common?', opts: [
+      { html: 'The same depth Z', why: 'Hold Z fixed and slide the tip sideways: x = f·X/Z changes with X, so at any one depth only a single spot lands on the ring. The spots that work are at different depths.' },
+      { html: 'The same sideways offset X', why: 'Hold X fixed and back away: x = f·X/Z shrinks toward the centre. At any one X only a single depth works.' },
+      { html: 'One straight line through the pinhole', correct: true },
+      { html: 'Nothing. Only one spot works.', why: 'There are several. Try X = 3, Z = 6 and then X = 4, Z = 8: both have X/Z = 0.5, so both land on 200 px.' }] },
+    { f: 400, x: 100, ask: 'What does this one pixel pin down about the tip?', opts: [
+      { html: 'Both X and Z', why: 'Then only one spot would land on the ring. Try X = 2, Z = 8 and then X = 3, Z = 12: same pixel, different place.' },
+      { html: 'Only the ratio X/Z', correct: true },
+      { html: 'Z, but not X', why: 'Spots that work exist at Z = 6, 8, 10 and 12. The pixel does not fix the depth.' },
+      { html: 'X, but not Z', why: 'The spots that work have different X as well as different Z: X = 2 at Z = 8, X = 3 at Z = 12. Only their ratio is shared.' }] },
+  ]);
+  const d = k.f / 100, sl = k.x / k.f, lands = p => k.f * p[1] / p[0], on = p => eq(lands(p), k.x);
+  let raw = [9, 1], tip = [9, 1], off = [0, 0], shown = false;
+  const hits = [];
+  return {
+    concept: 'pin-ray',
+    prompt: `A detector finds the bur tip in the image at <b>x = ${k.x} px</b> (ring); f = ${k.f} px. <b>Drag the tip</b> to a spot that lands on the ring, then find another. <b>${k.ask}</b>`,
+    view: [-2, 14, -2, 6],
+    visual: st => {
+      st.draw = () => {
+        const hit = on(tip), col = hit ? C.acc : C.fg;
+        st.grid(false); camera(st);
+        st.line([d, -1.5], [d, 5], C.fg, 2); st.ring([d, k.x / 100], C.acc, 8); small(st, [d, k.x / 100], k.x + ' px', C.acc, [-11, -13]);
+        if (shown) st.line([0, 0], [14, 14 * sl], C.acc, 2, [6, 5]);
+        for (const h of hits) st.dot(h, C.acc, null, 3.5);
+        st.line(tip, add(tip, [1.2, 2.2]), C.ghost, 7); st.line(tip, [0, 0], col, 1.5);
+        st.dot([d, d * tip[1] / tip[0]], col, null, 4); st.ring(tip, col, 11); st.dot(tip, col, null, 5); small(st, tip, 'bur tip', col, [16, 10]);
+        say(st, `tip at X = ${fmt(tip[1])}, Z = ${fmt(tip[0])} mm → x = ${Math.round(lands(tip))} px` + (hit ? ' <span class="ca">on the ring</span>' : '') + `<br>spots found: ${hits.length}`);
+      };
+      st.drag((w, ph) => {
+        if (ph === 'down') off = sub(raw, w); else raw = add(w, off);
+        raw = [clamp(raw[0], d + 1, 13.5), clamp(raw[1], -1.5, 5.5)]; tip = raw.map(c => Math.round(c * 2) / 2);
+        if (on(tip) && !hits.some(h => h[0] === tip[0] && h[1] === tip[1])) hits.push(tip);
+      });
+    },
+    input: { type: 'choice', cols: 2, options: k.opts },
+    explain: `x = f·X/Z only sees the ratio X/Z. Double both and nothing changes, so every point on the dashed ray lands on the same pixel. A pixel is a direction, not a place: the image has thrown the depth away. So the tip's pixel alone cannot place the bur tip in 3D. Something else has to pick the point on the ray, such as the shank's known ${D} mm width from the last screen.`,
+    after: st => { shown = true; st.redraw(); },
+  };
+};
+
+const zoom = v => {
+  const { a, b } = pick(v, [{ a: 400, b: 800 }, { a: 800, b: 400 }, { a: 300, b: 900 }]);
+  const W = 640, S = 160, Zs = 10, Xs = 1, r = D / 2, up = b > a, kk = up ? b / a : a / b;
+  let f = a, open = false;
+  const opt = (big, wide) => ({
+    html: `Image ${kk}× ${big ? 'bigger' : 'smaller'}. View ${wide ? 'wider' : 'narrower'}.`, correct: big === up && wide !== up,
+    why: big === up ? `${up ? 'Bigger' : 'Smaller'} is right. But the image is still ${W} px across: if everything in it is ${kk}× ${up ? 'bigger, less' : 'smaller, more'} of the scene fits. The view gets ${up ? 'narrower' : 'wider'}.`
+      : wide !== up ? `${up ? 'Narrower' : 'Wider'} is right. But x = f·X/Z has f on top: ${up ? kk + '× the f' : 'f divided by ' + kk} moves every image point ${kk}× ${up ? 'farther from' : 'closer to'} the centre, so the shank's image ${up ? 'grows' : 'shrinks'}.`
+      : `The other way round on both counts. x = f·X/Z has f on top, so a ${up ? 'larger' : 'smaller'} f ${up ? 'spreads the image out' : 'squeezes the image together'}, and then ${up ? 'less' : 'more'} of the scene fits into the same ${W} px.`,
+  });
+  return {
+    concept: 'pin-focal',
+    prompt: `The image is ${W} px wide, and the shaded wedge is everything the camera sees. Its lens has <b>f = ${a} px</b>. Swap in one with <b>f = ${b} px</b>. <b>What happens to the shank's image and to the view?</b>`,
+    view: [-2, 14, -4.5, 4.5],
+    visual: st => {
+      st.draw = () => {
+        const d = f / S, sl = W / 2 / f, sa = W / 2 / a;
+        st.poly([[0, 0], [14, 14 * sl], [14, -14 * sl]], null, 'rgba(255,212,59,.08)');
+        for (const e of [-1, 1]) { if (f !== a) st.line([0, 0], [14, 14 * sa * e], C.ghost, 1, [4, 4]); st.line([0, 0], [14, 14 * sl * e], C.acc, 1); }
+        tooth(st, 10.9, 1.4); camera(st, false);
+        for (const e of [-r, r]) st.line([Zs, Xs + e], [0, 0], C.fg, 1);
+        disc(st, [Zs, Xs], r, C.fg, 'rgba(255,255,255,.15)');
+        st.line([d, -2], [d, 2], C.fg, 2.5); small(st, [-2, -1.1], `f = ${Math.round(f)} px`, C.fg, [6, 14]);
+        st.line([d, d * (Xs - r) / Zs], [d, d * (Xs + r) / Zs], C.acc, 5);
+        say(st, `f = ${Math.round(f)} px · shank ${Math.round(f * D / Zs)} px · view ${Math.round(2 * Math.atan(sl) * 180 / Math.PI)}°`);
+      };
+      st.drag(p => { if (open) f = clamp(Math.round(p[0] * S / 10) * 10, 250, 1200); });
+    },
+    input: { type: 'choice', cols: 2, options: [opt(true, true), opt(true, false), opt(false, true), opt(false, false)] },
+    explain: `x = f·X/Z has f on top, so f is the zoom: ${up ? kk + '× the f' : 'f divided by ' + kk} makes every image ${kk}× ${up ? 'bigger' : 'smaller'} in pixels (the shank: ${fmt(a * D / Zs)} → ${fmt(b * D / Zs)} px). The image is still only ${W} px across, so ${up ? 'less' : 'more'} of the scene fits. Large f: narrow view, big images. Small f: wide view, small images. Drag sideways to change f.`,
+    after: st => st.animate(1200, t => { f = a + (b - a) * t; if (t === 1) open = true; }),
+  };
+};
+
+// the stored image: stage point = [u, -v], so v runs down the screen
+const IMG = { W: 640, H: 480, cx: 320, cy: 240 };
+const imageGrid = st => {
+  const { W, H, cx, cy } = IMG, g = st.g;
+  st.poly([[0, 0], [W, 0], [W, -H], [0, -H]], C.ghost, 'rgba(255,255,255,.04)', 1.5);
+  for (let u = 80; u < W; u += 80) st.line([u, 0], [u, -H], C.line, 1);
+  for (let w = 80; w < H; w += 80) st.line([0, -w], [W, -w], C.line, 1);
+  g.font = '11px ui-monospace, Menlo, monospace'; g.fillStyle = C.dim; g.textBaseline = 'middle';
+  g.textAlign = 'center'; for (let u = 0; u <= W; u += 80) g.fillText(u, st.px([u, 0])[0], st.px([u, 0])[1] - 9);
+  g.textAlign = 'right'; for (let w = 80; w <= H; w += 80) g.fillText(w, st.px([0, -w])[0] - 5, st.px([0, -w])[1]);
+  st.arrow([0, 0], [118, 0], C.x, 2.5); st.arrow([0, 0], [0, -118], C.y, 2.5);
+  st.label([118, 0], 'u', C.x, [8, 12]); st.label([0, -118], 'v', C.y, [12, 10]);
+  st.line([cx - 16, -cy], [cx + 16, -cy], C.fg, 2); st.line([cx, -cy - 16], [cx, -cy + 16], C.fg, 2);
+};
+
+const pixel = v => {
+  const { P, f } = pick(v, [{ P: [2, -1, 10], f: 800 }, { P: [-1, 2, 10], f: 800 }, { P: [-4, -4, 20], f: 400 }, { P: [4, 2, 20], f: 800 }]);
+  const { cx, cy } = IMG, dx = f * P[0] / P[2], dy = f * P[1] / P[2], u = dx + cx, w = dy + cy;
+  let shown = false;
+  return {
+    concept: 'pin-principal',
+    prompt: `Pixels count from the image's <b>top-left corner</b>: u right, v down. The optical axis lands on the cross, (${cx}, ${cy}). Camera x points right, <b>y points down</b>. The tip is at (X, Y, Z) = <b>${pt(P)}</b> mm, f = <b>${f} px</b>. <b>Tap its pixel.</b>`,
+    view: [-70, 670, -510, 40],
+    visual: st => {
+      st.draw = () => {
+        imageGrid(st);
+        if (shown) {
+          st.line([cx, -cy], [u, -cy], C.x, 2, [4, 4]); st.line([u, -cy], [u, -w], C.y, 2, [4, 4]);
+          small(st, [(cx + u) / 2, -cy], (dx > 0 ? '+' : '') + num(dx), C.x, [0, dy < 0 ? 12 : -12]); small(st, [u, -(cy + w) / 2], (dy > 0 ? '+' : '') + num(dy), C.y, [dx < 0 ? -8 : 8, 0]);
+          st.dot([u, -w], C.acc, null, 6);
+        }
+      };
+    },
+    input: {
+      type: 'point', snap: 80, answer: [u, -w],
+      why: p => {
+        const tu = p[0], tv = -p[1], at = (a, b) => eq(tu, a) && eq(tv, b), vside = P[1] < 0 ? 'above' : 'below', hside = P[0] > 0 ? 'right' : 'left';
+        return at(cx, cy) ? 'That is the principal point itself, where a point on the optical axis (X = Y = 0) lands. The tip is off the axis.'
+          : at(dx, dy) || at(Math.abs(dx), Math.abs(dy)) ? `You counted f·X/Z and f·Y/Z from the corner. They are offsets from where the optical axis lands, (${cx}, ${cy}).`
+          : at(u, cy - dy) ? `Across is right. Up and down you went the wrong way: Y = ${num(P[1])} is ${vside} the axis because camera y points down, and v counts downward too, so the tip is ${vside} the cross.`
+          : at(cx - dx, w) ? `Up and down is right. Across you went the wrong way: X = ${num(P[0])} is to the ${hside} of the axis, and u counts rightward.`
+          : at(cx - dx, cy - dy) ? 'Both offsets are the right size but point the wrong way. Nothing flips here: +X is right like +u, and +Y is down like +v.'
+          : at(cx + dy, cy + dx) ? 'You swapped the two. X goes with u (across), Y goes with v (down).'
+          : tu < 0 || tu > IMG.W || tv < 0 || tv > IMG.H ? 'That is outside the image. Start from the cross, where the optical axis lands, and move by f·X/Z and f·Y/Z pixels.'
+          : `Start at the cross, (${cx}, ${cy}). Go f·X/Z = ${f}·${par(P[0])}/${P[2]} px along u, then f·Y/Z = ${f}·${par(P[1])}/${P[2]} px along v. Negative means left or up.`;
+      },
+    },
+    explain: `<b>u = f·X/Z + c<sub>x</sub></b> = ${num(dx)} + ${cx} = ${fmt(u)}, and <b>v = f·Y/Z + c<sub>y</sub></b> = ${num(dy)} + ${cy} = ${fmt(w)}. f·X/Z is measured from the optical axis, pixels are counted from the corner, and the principal point (c<sub>x</sub>, c<sub>y</sub>) is the shift between the two. No sign flips: camera y and pixel v both point down.`,
+    after: st => { shown = true; st.redraw(); },
+  };
+};
+
+// ---- problems ----
+
+const pFrame = v => {
+  const k = pick(v, [
+    { dir: 1, o: [2, 0, 14], p: [1, 0, 6], f: 600 }, { dir: -1, o: [-1, 0, -10], p: [3, 0, 6], f: 400 }, { dir: 1, o: [-4, 0, 9], p: [1, 0, 3], f: 800 },
+    { dir: -1, o: [2, 0, -18], p: [5, 0, 2], f: 500 }, { dir: 1, o: [1, 0, 8], p: [2, 0, 2], f: 500 },
+  ]);
+  const { p, o, f } = k, pc = p.map((c, i) => c + k.dir * o[i]), bad = p.map((c, i) => c - k.dir * o[i]), ans = f * pc[0] / pc[2];
+  return {
+    concept: 'pin-similar-triangles',
+    prompt: `Tooth and camera axes are parallel. The ${k.dir > 0 ? 'tooth origin' : 'pinhole'} is at <b>${pt(o)}</b> mm in ${k.dir > 0 ? 'camera' : 'tooth'} coordinates; the bur tip is at <b>${pt(p)}</b> mm in tooth coordinates. f = <b>${f} px</b>. <b>How many px right of the principal point does the tip land?</b> (Left is negative.)`,
+    input: {
+      type: 'number', answer: ans, unit: 'px',
+      why: x => eq(x, f * p[0] / p[2]) ? 'You projected the tooth-frame numbers. x = f·X/Z needs X and Z measured from the pinhole along the camera\'s axes: convert the tip to camera coordinates first.'
+        : eq(x, f * bad[0] / bad[2]) ? (k.dir > 0 ? 'You subtracted the offset. The tooth origin is given in camera coordinates, so p<sub>cam</sub> = p<sub>tooth</sub> + t.' : 'You added the offset. It is the pinhole\'s position in tooth coordinates, so going to the camera frame subtracts it: p<sub>cam</sub> = p<sub>tooth</sub> − t.')
+        : eq(x, -ans) ? 'Right size, wrong sign. The image plane in front of the pinhole does not flip anything: positive X lands at positive x.'
+        : eq(x, pc[0] / pc[2]) ? 'That is X/Z, the slope of the ray. Multiply by f to turn it into pixels.'
+        : eq(x, f * pc[2] / pc[0]) ? 'Upside down: that is f·Z/X. Depth goes in the denominator.'
+        : eq(x, f * pc[0]) ? 'You multiplied f by X and stopped. Divide by the depth Z.'
+        : eq(x, pc[0]) ? 'That is the tip\'s X in the camera frame, in mm. The conversion is right; now project it: x = f·X/Z.'
+        : 'Two steps: convert the tip to camera coordinates, then x = f·X/Z with those numbers.',
+    },
+    explain: `x = f·X/Z only works on camera coordinates. Tip in the camera frame: ${pt(p)} ${k.dir > 0 ? '+' : '−'} ${pt(o)} = ${pt(pc)} mm. Then x = ${f}·${par(pc[0])}/${pc[2]} = <b>${num(ans)} px</b>. That first step is T<sub>cam,tooth</sub> applied to the tip; here it happens to be a pure shift.`,
+  };
+};
+
+const pDepth = v => {
+  const { f, w, d } = pick(v, [{ f: 500, w: 40, d: 1.6 }, { f: 400, w: 80, d: 1.6 }, { f: 600, w: 80, d: 1.6 }, { f: 800, w: 64, d: 1.6 }, { f: 400, w: 47, d: 2.35 }, { f: 600, w: 60, d: 1.6 }]);
+  const ans = f * d / w;
+  return {
+    concept: 'pin-depth-scale',
+    prompt: `This bur's shank is <b>${d} mm</b> across. In one video frame it measures <b>${w} px</b> across, and f = <b>${f} px</b>. <b>How far from the pinhole is the shank?</b>`,
+    view: [0, 320, -100, 0],
+    visual: st => {
+      st.draw = () => {
+        const a = 160 - w / 2, b = 160 + w / 2;
+        st.poly([[a, 0], [b, 0], [b, -66], [160 + w / 5, -84], [160, -92], [160 - w / 5, -84], [a, -66]], C.ghost, 'rgba(255,255,255,.12)', 1.5);
+        st.line([a, -34], [b, -34], C.acc, 2); st.line([a, -26], [a, -42], C.acc, 2); st.line([b, -26], [b, -42], C.acc, 2);
+        small(st, [b, -34], w + ' px', C.acc, [10, 0]); small(st, [0, 0], 'in the image', C.dim, [10, 14]);
+      };
+    },
+    input: {
+      type: 'number', answer: ans, unit: 'mm',
+      why: x => eq(x, f / w) ? `That is f ÷ width, the depth of something 1 mm across. The shank is ${d} mm across: multiply by that.`
+        : eq(x, w * d / f) ? 'Upside down: you divided by f. A large f makes images bigger, so for the same width in pixels the shank must be farther away.'
+        : eq(x, f * w / d) ? 'You multiplied by the width in pixels. A wider image means a closer shank, so the pixel width divides.'
+        : eq(x, w * d) ? 'That is width × diameter. f is missing, and the pixel width should divide, not multiply.'
+        : `Width in pixels = f·D/Z. You know the width (${w} px), f and D. Solve for Z.`,
+    },
+    explain: `Width = f·D/Z, so <b>Z = f·D/width</b> = ${f}·${d}/${w} = ${fmt(ans)} mm. The shank's real diameter is known, so its width in pixels is a depth gauge, read fresh in every frame. No fixed camera-to-bur offset is assumed, which is what an elastic mount needs.`,
+  };
+};
+
+const pPixel = v => {
+  const { P, f, c, i } = pick(v, [
+    { P: [-2, 1, 12], f: 600, c: [320, 240], i: 1 }, { P: [3, -2, 20], f: 600, c: [320, 240], i: 0 }, { P: [2, -3, 12], f: 600, c: [400, 300], i: 1 },
+    { P: [-4, 2, 16], f: 400, c: [320, 240], i: 0 }, { P: [2, 3, 15], f: 500, c: [640, 360], i: 1 },
+  ]);
+  const j = 1 - i, off = f * P[i] / P[2], other = f * P[j] / P[2], ans = off + c[i], A = 'XY'[i], uv = 'uv'[i], cn = `c<sub>${'xy'[i]}</sub>`;
+  return {
+    concept: 'pin-principal',
+    prompt: `The bur tip is at (X, Y, Z) = <b>${pt(P)}</b> mm in the camera frame. f = <b>${f} px</b> and the principal point is (c<sub>x</sub>, c<sub>y</sub>) = <b>${pt(c)}</b>. <b>What is the tip's ${uv}, its pixel ${i ? 'row' : 'column'}?</b>`,
+    input: {
+      type: 'number', answer: ans, unit: 'px',
+      why: x => eq(x, off) ? `That is f·${A}/Z, the offset from the principal point. Pixels are counted from the top-left corner: add ${cn} = ${c[i]}.`
+        : eq(x, c[i] - off) ? `You subtracted the offset. Nothing flips: ${i ? 'camera y and pixel v both point down' : 'camera x and pixel u both point right'}, so add it.`
+        : eq(x, off + c[j]) ? `You added c<sub>${'xy'[j]}</sub>. ${uv} pairs with ${cn} = ${c[i]}.`
+        : eq(x, other + c[i]) ? `You projected ${'XY'[j]}. ${uv} runs along the camera's ${'xy'[i]} axis: use ${A} = ${num(P[i])}.`
+        : eq(x, other + c[j]) ? `That is ${'uv'[j]}, the other pixel coordinate. ${uv} uses ${A} and ${cn}.`
+        : eq(x, c[i]) ? `That is ${cn} itself, where a point on the optical axis lands. The tip is off the axis: add f·${A}/Z.`
+        : `${uv} = f·${A}/Z + ${cn}. Project first, then shift by the principal point.`,
+    },
+    explain: `<b>${uv} = f·${A}/Z + ${cn}</b> = ${f}·${par(P[i])}/${P[2]} + ${c[i]} = ${num(off)} + ${c[i]} = ${fmt(ans)}. The projection is measured from the optical axis; the principal point moves the origin to the top-left corner. ${i ? 'Camera y and v both point down' : 'Camera x and u both point right'}, so the sign carries straight over.`,
+  };
+};
+
+const pRay = v => {
+  const { p, s } = pick(v, [{ p: [2, 1, 10], s: 2 }, { p: [3, -1, 12], s: 0.5 }, { p: [-2, 4, 8], s: 1.5 }, { p: [1, 2, 5], s: 3 }]);
+  const deep = s > 1, opts = [
+    { html: pt(p.map(c => c * s)), correct: true },
+    { html: pt([p[0], p[1], p[2] * s]), why: `Same X and Y but ${deep ? 'deeper' : 'shallower'}. Z changed on its own, so X/Z and Y/Z changed, and the image point moved ${deep ? 'toward' : 'away from'} the principal point.` },
+    { html: pt([p[0] * s, p[1] * s, p[2]]), why: `Same depth, but ${deep ? 'farther from' : 'closer to'} the axis. X/Z and Y/Z changed, so the image point moved ${deep ? 'away from' : 'toward'} the principal point.` },
+    { html: pt(p.map(c => c + 1)), why: `Adding 1 to every coordinate is a shift, not a slide along the ray: X/Z went from ${num(p[0])}/${p[2]} to ${num(p[0] + 1)}/${p[2] + 1}. Points on one ray are multiples of each other.` },
+  ];
+  return {
+    concept: 'pin-ray',
+    prompt: `The bur tip is at <b>${pt(p)}</b> mm in the camera frame and lights up one pixel. <b>Which of these points would light up exactly the same pixel?</b>`,
+    input: { type: 'choice', cols: 2, options: opts.map((_, n) => opts[(n + (v % 4) + 4) % 4]) },
+    explain: `The pixel depends only on X/Z and Y/Z. Multiply all three coordinates by the same number (here ${s}) and both ratios survive: ${pt(p.map(c => c * s))} is on the same ray through the pinhole. One pixel is that whole ray, so a single image point cannot say how deep the tip is.`,
+  };
+};
+
+const pView = v => {
+  const { W, f, Z } = pick(v, [{ W: 640, f: 400, Z: 10 }, { W: 640, f: 800, Z: 10 }, { W: 1280, f: 800, Z: 15 }, { W: 640, f: 320, Z: 12 }, { W: 480, f: 600, Z: 20 }]);
+  const ans = W * Z / f;
+  return {
+    concept: 'pin-focal',
+    prompt: `An intraoral camera's image is <b>${W} px</b> wide with the principal point in the middle, and f = <b>${f} px</b>. The teeth are <b>${Z} mm</b> away. <b>How wide a strip of them fits in the image?</b>`,
+    input: {
+      type: 'number', answer: ans, unit: 'mm',
+      why: x => eq(x, ans / 2) ? `That is from the optical axis to one edge. The image runs ${W / 2} px to each side of the principal point, so the strip is twice that.`
+        : eq(x, ans * 2) ? `Twice too wide. The edge pixel is ${W / 2} px from the principal point, not ${W}.`
+        : eq(x, f * Z / W) || eq(x, 2 * f * Z / W) ? 'Upside down. A larger f zooms in and sees a narrower strip, so f belongs in the denominator.'
+        : eq(x, W * f / Z) || eq(x, W / 2 * f / Z) ? 'You multiplied by f and divided by Z, which is the projection run forwards. Here the pixel is known and X is wanted: X = x·Z/f.'
+        : `The edge pixel is ${W / 2} px from the principal point. Put that into x = f·X/Z, solve for X at Z = ${Z} mm, and count both sides.`,
+    },
+    explain: `The edge pixel is ${W / 2} px from the principal point. x = f·X/Z gives X = ${W / 2}·${Z}/${f} = ${fmt(ans / 2)} mm to each side, <b>${fmt(ans)} mm</b> in all: W·Z/f. f is in the denominator: double it and the strip halves. For scale, a molar is about 10 mm across.`,
+  };
+};
+
+Reps.lesson({
+  id: 'u2-pinhole',
+  title: 'The pinhole camera',
+  learn: [flip, shrink, ray, zoom, pixel],
+  problems: [pFrame, pDepth, pPixel, pRay, pView],
+});
+</script>
+</body>
+</html>

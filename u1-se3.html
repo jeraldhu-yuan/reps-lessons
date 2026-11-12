@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<link rel="stylesheet" href="shared/reps.css">
+<script src="shared/reps.js"></script>
+</head>
+<body>
+<script>
+const { C, add, sub, vec, pick, mat, apply, mul, proj, rad, T: tr } = Reps;
+const XYZ = 'xyz';
+const sc = (p, k) => p.map(x => x * k);
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const V = (p, pre = '') => `<span style="white-space:nowrap">${pre}${vec(p)}</span>`;   // a vector that never breaks across lines
+const Tn = (a, b, inv) => `T<sub>${a},${b}</sub>${inv ? '⁻¹' : ''}`;
+
+// ---- poses: { R: 3×3, t: [x, y, z] } ----
+// rotation by deg about a coordinate axis, right-hand rule; exact integers for multiples of 90
+const R3 = (ax, deg) => {
+  const c = Math.cos(rad(deg)), s = Math.sin(rad(deg)), [a, b] = { x: [1, 2], y: [2, 0], z: [0, 1] }[ax];
+  const M = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  M[a][a] = c; M[a][b] = -s; M[b][a] = s; M[b][b] = c;
+  return deg % 90 ? M : M.map(r => r.map(x => Math.round(x) + 0));
+};
+const at = (F, p) => add(apply(F.R, p), F.t);                           // R·p + t
+const comp = (A, B) => ({ R: mul(A.R, B.R), t: at(A, B.t) });            // A·B
+const inv = F => ({ R: tr(F.R), t: sc(apply(tr(F.R), F.t), -1) });       // (Rᵀ, −Rᵀt)
+const hom = F => [...F.R.map((r, i) => [...r, F.t[i]]), [0, 0, 0, 1]];   // 4×4
+const col = (R, j) => R.map(r => r[j]);
+const turn3 = (ax, deg) => `${deg === 180 ? '' : deg > 0 ? '+' : '−'}${Math.abs(deg)}° about ${ax}`;
+const rule = R => '(x, y, z) → (' + R.map(r => { const j = r.findIndex(x => x); return (r[j] < 0 ? '−' : '') + XYZ[j]; }).join(', ') + ')';
+const CAM = { R: R3('z', 0), t: [0, 0, 0] };
+const blk = (a, b) => mat([[a, b], ['0', '1']]);
+
+// the explanation for the first listed slip that matches the typed number; else the fallback
+const slip = (x, list, other) => (list.find(s => Math.abs(x - s[0]) < 0.011) || [0, other])[1];
+const others = (p, i) => [0, 1, 2].filter(j => j !== i).map(j => [p[j], `That is the ${XYZ[j]}-coordinate. The question asks for ${XYZ[i]}.`]);
+
+// ---- 3D drawing on the 2D stage ----
+// Returns a getter for the current projector, which keeps pts centred and in view. Dragging orbits unless o.orbit is false.
+const scene = (st, pts, o = {}) => {
+  let yaw = o.yaw ?? 30, pitch = o.pitch ?? 24, last = null;
+  const [x0, x1, y0, y1] = st.view, W = x1 - x0, H = y1 - y0, pad = o.pad ?? 0.76;
+  const ext = (P, i) => { const a = P.map(p => p[i]), lo = Math.min(...a), hi = Math.max(...a); return [(lo + hi) / 2, hi - lo]; };
+  const c = [0, 1, 2].map(i => ext(pts, i)[0]), sMin = Math.min(W, H) / 2 * pad / Math.max(...pts.map(p => Math.hypot(...sub(p, c))));
+  if (o.orbit !== false) st.drag((w, ph) => {
+    if (ph !== 'down' && last) { yaw -= (w[0] - last[0]) * 30; pitch = clamp(pitch + (w[1] - last[1]) * 30, -85, 85); }
+    last = ph === 'up' ? null : w;
+  });
+  const get = () => {
+    const pr = proj(yaw, pitch), q = pts.map(p => pr(sub(p, c))), u = ext(q, 0), w = ext(q, 1);
+    const s = get.s = clamp(Math.min(W / u[1], H / w[1]) * pad, sMin, sMin * 1.8);
+    return p => sub(sc(pr(sub(p, c)), s), [u[0] * s, w[0] * s]);
+  };
+  get(); return get;
+};
+// a label that stays readable on top of lines; off is in pixels
+const tag = (st, p, text, color = C.fg, off = [12, -12], align) => {
+  const g = st.g, [x, y] = st.px(p);
+  g.font = '600 14px -apple-system, system-ui, sans-serif'; g.textAlign = align || (off[0] < 0 ? 'right' : off[0] > 0 ? 'left' : 'center'); g.textBaseline = 'middle';
+  g.lineWidth = 4; g.strokeStyle = '#191c23'; g.strokeText(text, x + off[0], y + off[1]); g.fillStyle = color; g.fillText(text, x + off[0], y + off[1]);
+};
+// the z = 0 plane of the reference frame as 1 mm squares, wide enough to hold pts
+const floor = (st, P, pts) => {
+  const r = i => [Math.min(0, ...pts.map(p => Math.floor(p[i]))), Math.max(1, ...pts.map(p => Math.ceil(p[i])))], [xa, xb] = r(0), [ya, yb] = r(1);
+  for (let x = xa; x <= xb; x++) st.line(P([x, ya, 0]), P([x, yb, 0]), C.line, 1);
+  for (let y = ya; y <= yb; y++) st.line(P([xa, y, 0]), P([xb, y, 0]), C.line, 1);
+};
+const tips = (F, len = 1.5) => [0, 1, 2].map(j => add(F.t, sc(col(F.R, j), len)));   // arrow heads of a frame, to keep them in view
+const frame3 = (st, P, F, name, len = 1.5, alpha = 1) => {
+  const g = st.g, o = st.px(P(F.t)); g.globalAlpha = alpha;
+  tips(F, len).forEach((p, j) => st.arrow(P(F.t), P(p), [C.x, C.y, C.z][j], 2.5));
+  st.dot(P(F.t), C.fg, null, 4); g.globalAlpha = 1;
+  if (!name) return;
+  // the name goes on the side away from the three arrows
+  const m = [0, 1, 2].map(j => sub(st.px(P(add(F.t, col(F.R, j)))), o)).reduce(add), L = Math.hypot(...m) || 1;
+  g.font = '600 14px -apple-system, system-ui, sans-serif';
+  tag(st, P(F.t), name, C.fg, [0, 0].map((_, i) => -m[i] / L * (i ? 17 : 12 + g.measureText(name).width / 2)), 'center');
+};
+// dashed walk from the origin of F: p[0] along its x, then p[1] along its y, then p[2] along its z. k in 0..1 draws part of it.
+const legs3 = (st, P, F, p, k = 1) => {
+  let a = F.t;
+  [C.x, C.y, C.z].forEach((c, j) => { const f = clamp(k * 3 - j, 0, 1), b = add(a, sc(col(F.R, j), p[j] * f)); if (f && p[j]) st.line(P(a), P(b), c, 2, [5, 4]); a = b; });
+};
+const shank = (st, P, F, L = 3.2) => st.line(P(F.t), P(at(F, [0, 0, L])), 'rgba(232,234,237,.2)', 9);
+const block = (st, P, F, h = 0.75) => {
+  const v = i => P(at(F, [i & 1 ? h : -h, i & 2 ? h : -h, i & 4 ? h : -h]));
+  for (let i = 0; i < 8; i++) for (const b of [1, 2, 4]) if (!(i & b)) st.line(v(i), v(i | b), C.ghost, 1);
+};
+const camBody = (st, P, F) => {
+  const q = [[-.6, -.4], [.6, -.4], [.6, .4], [-.6, .4]].map(([x, y]) => P(at(F, [x, y, 1])));
+  q.forEach((p, i) => { st.line(P(F.t), p, C.dim, 1); st.line(p, q[(i + 1) % 4], C.dim, 1); });
+};
+
+// ---- learn ----
+
+const applyWhy = (k, R, a, b) => x => slip(x, [
+  [add(k.p, k.t)[k.i], `You added t without rotating. ${vec(k.p)} is measured along the ${b}'s axes, and those are turned relative to the ${a}'s. Rotate first, R·p, then add t.`],
+  [apply(R, k.p)[k.i], `That is R·p alone: the point seen from the ${b} origin, in ${a} directions. The ${b} origin is not at the ${a} origin. Add t.`],
+  [apply(R, add(k.p, k.t))[k.i], `You shifted first and rotated second, which swings t around as well. t is already in ${a} coordinates: rotate only p, then add t.`],
+  [add(apply(tr(R), k.p), k.t)[k.i], `Right recipe, but the turn went the wrong way. ${turn3(k.ax, k.deg)} by the right-hand rule sends ${rule(R)}.`],
+  ...others(at({ R, t: k.t }, k.p), k.i),
+], `Take it in two steps and check each. Rotate p: ${turn3(k.ax, k.deg)} sends ${rule(R)}. Then add t. A sign slip in the rotation is the usual cause.`);
+
+const APPLY = [
+  { ax: 'z', deg: 90, t: [5, 1, 2], p: [2, 1, 3], i: 0 },
+  { ax: 'z', deg: -90, t: [1, 6, 2], p: [3, 1, 2], i: 1 },
+  { ax: 'z', deg: 180, t: [4, 2, 1], p: [1, 3, 2], i: 0 },
+];
+const applyPose = v => {
+  const k = pick(v, APPLY), R = R3(k.ax, k.deg), B = { R, t: k.t }, Rp = apply(R, k.p), q = add(Rp, k.t);
+  let m = 0;
+  return {
+    concept: 'pose-apply',
+    prompt: `The camera sees the bur frame turned <b>${turn3(k.ax, k.deg)}</b>, its origin at <b>${V(k.t, 't = ')}</b> mm. A mark sits at <b>${V(k.p)}</b> in the bur's own frame (dashed walk). Drag to look around. <b>What is the mark's ${XYZ[k.i]}-coordinate in the camera frame?</b>`,
+    view: [-5, 5, -4, 4],
+    visual: st => {
+      const pts = [[0, 0, 0], k.t, q, k.p, at(B, [0, 0, 3])], view = scene(st, [...pts, ...tips(CAM), ...tips(B)]);
+      st.draw = () => {
+        const P = view();
+        floor(st, P, pts); frame3(st, P, CAM, 'camera');
+        if (m > 0 && m < 1) {   // the camera frame carried onto the bur frame: turn first, then slide
+          const G = m < 0.5 ? { R: R3(k.ax, k.deg * m * 2), t: [0, 0, 0] } : { R, t: sc(k.t, m * 2 - 1) };
+          frame3(st, P, G, null, 1.5, 0.5); st.dot(P(at(G, k.p)), C.acc, null, 5);
+        }
+        shank(st, P, B, 3); legs3(st, P, B, k.p); frame3(st, P, B, 'bur');
+        if (m === 1) legs3(st, P, CAM, q);
+        st.dot(P(q), C.acc); tag(st, P(q), 'mark', C.acc);
+        st.readout(m === 1 ? `R·p &nbsp; &nbsp; = ${vec(Rp)}<br>R·p + t = <span class="ca">${vec(q)}</span>` : '');
+      };
+    },
+    input: { type: 'number', answer: q[k.i], unit: 'mm', why: applyWhy(k, R, 'camera', 'bur') },
+    explain: `A pose is a rotation plus a position, (R, t). It turns bur coordinates into camera coordinates: <b>p<sub>cam</sub> = R·p<sub>bur</sub> + t</b>. Rotate first (${turn3(k.ax, k.deg)} sends ${rule(R)}), then shift to where the bur origin sits: ${vec(Rp)} + ${vec(k.t)} = ${vec(q)}. The same recipe as in 2D, with one more axis.`,
+    after: st => st.animate(1700, t => { m = t; }),
+  };
+};
+
+const READ = [
+  { ax: 'z', deg: 90, t: [3, 2, 1], ask: 3 },
+  { ax: 'x', deg: 90, t: [2, 4, 1], ask: 2 },
+  { ax: 'y', deg: 90, t: [4, 1, 2], ask: 3 },
+  { ax: 'z', deg: -90, t: [3, 4, 1], ask: 0 },
+];
+const readPose = v => {
+  const k = pick(v, READ), R = R3(k.ax, k.deg), B = { R, t: k.t }, j = k.ask, o = j === 3, j2 = (j + 1) % 3;
+  const opts = o ? [
+    { html: vec(k.t), correct: true },
+    { html: vec(col(R, 0)), why: 'That is the first column: the direction the bur\'s x-axis points. A direction, not a place.' },
+    { html: vec([0, 0, 0]), why: 'That is the bottom row, and it would put the bur tip on the camera origin. The bottom row is 0 0 0 1 for every pose; it says nothing about this bur.' },
+    { html: vec(col(R, 2)), why: 'That is the third column: the direction the bur\'s z-axis points. A direction, not a place.' },
+  ] : [
+    { html: vec(col(R, j)), correct: true },
+    { html: vec(R[j]), why: `That is row ${j + 1}. Rows of R are the camera's axes written in bur coordinates, which is the inverse rotation. The bur's own axes are the columns.` },
+    { html: vec(k.t), why: 'That is the last column: where the bur origin sits. A position, not a direction. Directions are the first three columns.' },
+    { html: vec(col(R, j2)), why: `That is column ${j2 + 1}, the bur's ${XYZ[j2]}-axis. Columns go x, y, z from the left.` },
+  ];
+  let m = 0;
+  return {
+    concept: 'pose-matrix',
+    prompt: `Pack R and t into one 4×4: R top-left, t down the last column, bottom row 0 0 0 1.<br>${Tn('cam', 'bur')} = ${mat(hom(B))}<br>` + (o ? '<b>Where is the bur\'s origin (its tip), in camera coordinates?</b>'
+      : j === 2 ? 'The shank runs along the bur\'s z-axis. <b>Which way does it point, in camera coordinates?</b>' : `<b>Which way does the bur's ${XYZ[j]}-axis point, in camera coordinates?</b>`),
+    view: [-5, 5, -3.4, 3.4],
+    visual: st => {
+      const pts = [[0, 0, 0], k.t, at(B, [0, 0, 2.6])], view = scene(st, [...pts, ...tips(CAM), ...tips(B)], { pad: 0.74 });
+      st.draw = () => {
+        const P = view();
+        floor(st, P, pts); frame3(st, P, CAM, 'camera'); shank(st, P, B, 2.6); frame3(st, P, B, 'bur');
+        if (m && o) { legs3(st, P, CAM, k.t, m); if (m === 1) st.ring(P(k.t), C.acc, 10); }
+        if (m && !o) st.arrow(P(k.t), P(add(k.t, sc(col(R, j), 2.4 * m))), C.acc, 4);
+      };
+    },
+    input: { type: 'choice', cols: 2, options: opts.map((_, n) => opts[(n + v + 3) % 4]) },
+    explain: `Read a pose matrix by its columns. The first three are where the bur's <span class="cx">x</span>, <span class="cy">y</span>, <span class="cz">z</span> axes point; the fourth is where its origin sits. All four are in camera coordinates. Multiply the matrix by (p, 1) and out comes (R·p + t, 1): one product does rotate-then-shift.`,
+    after: st => st.animate(1000, t => { m = t; }),
+  };
+};
+
+const composeWhy = (k, [a, b, c]) => {
+  const A = { R: R3(...k.r1), t: k.t1 }, B = { R: R3(...k.r2), t: k.t2 };
+  return x => slip(x, [
+    [add(k.t1, k.t2)[k.i], `You added the two translations as they stand. ${vec(k.t2)} is measured along the ${b}'s axes, which are turned relative to the ${a}'s. Rotate it into ${a} directions first.`],
+    [apply(A.R, k.t2)[k.i], `That is the walk from the ${b} origin to the ${c} origin, in ${a} directions. The walk starts at the ${b} origin, so add ${vec(k.t1)}.`],
+    [at(B, k.t1)[k.i], `You turned the ${a}-to-${b} shift with the ${c}'s rotation. It goes the other way: the outer pose ${Tn(a, b)} acts on the inner shift ${vec(k.t2)}.`],
+    [add(apply(tr(A.R), k.t2), k.t1)[k.i], `Right recipe, but the turn went the wrong way. ${turn3(...k.r1)} sends ${rule(A.R)}.`],
+    ...others(at(A, k.t2), k.i),
+  ], `The ${c} origin is the point ${vec(k.t2)} in ${b} coordinates. Convert that point to ${a} coordinates with ${Tn(a, b)}: rotate it (${turn3(...k.r1)} sends ${rule(A.R)}), then add ${vec(k.t1)}.`);
+};
+
+const COMPOSE = [
+  { r1: ['z', 90], t1: [2, 4, 1], r2: ['x', 90], t2: [3, 1, 2], i: 1 },
+  { r1: ['x', 90], t1: [1, 2, 3], r2: ['z', 90], t2: [2, 1, 4], i: 1 },
+  { r1: ['z', -90], t1: [1, 2, 5], r2: ['y', 90], t2: [3, 1, 2], i: 0 },
+];
+const composePose = v => {
+  const k = pick(v, COMPOSE), A = { R: R3(...k.r1), t: k.t1 }, B = { R: R3(...k.r2), t: k.t2 }, AB = comp(A, B), Rt = apply(A.R, k.t2);
+  let m = 0;
+  return {
+    concept: 'pose-compose',
+    prompt: `Your renderer places the tooth in the camera, ${Tn('cam', 'tooth')}: ${turn3(...k.r1)}, <b>${V(k.t1, 't<sub>1</sub> = ')}</b>. And the bur in the tooth, ${Tn('tooth', 'bur')}: ${turn3(...k.r2)}, <b>${V(k.t2, 't<sub>2</sub> = ')}</b>. Where does the camera see the bur origin? <b>Its ${XYZ[k.i]}-coordinate:</b>`,
+    view: [-5, 5, -4, 4],
+    visual: st => {
+      const pts = [[0, 0, 0], A.t, AB.t, at(AB, [0, 0, 2])], view = scene(st, [...pts, ...tips(CAM), ...tips(A), ...tips(AB)]);
+      st.draw = () => {
+        const P = view();
+        floor(st, P, pts); legs3(st, P, CAM, A.t); legs3(st, P, A, B.t);
+        shank(st, P, AB, 2); frame3(st, P, CAM, 'camera'); frame3(st, P, A, 'tooth'); frame3(st, P, AB, 'bur');
+        if (m) st.arrow(P([0, 0, 0]), P(sc(AB.t, m)), C.acc, 3);
+        st.readout(m === 1 ? `R<sub>1</sub>·t<sub>2</sub> &nbsp; &nbsp; &nbsp;= ${vec(Rt)}<br>R<sub>1</sub>·t<sub>2</sub> + t<sub>1</sub> = <span class="ca">${vec(AB.t)}</span>` : '');
+      };
+    },
+    input: { type: 'number', answer: AB.t[k.i], unit: 'mm', why: composeWhy(k, ['camera', 'tooth', 'bur']) },
+    explain: `<b>${Tn('cam', 'bur')} = ${Tn('cam', 'tooth')} · ${Tn('tooth', 'bur')}</b>: the inner name, tooth, cancels. The bur origin is the point t<sub>2</sub> in tooth coordinates, so the camera sees it at R<sub>1</sub>·t<sub>2</sub> + t<sub>1</sub> = ${vec(AB.t)}. The rotations just multiply. As 4×4 matrices it is one product: ${blk('R<sub>1</sub>', 't<sub>1</sub>')}${blk('R<sub>2</sub>', 't<sub>2</sub>')} = ${blk('R<sub>1</sub>R<sub>2</sub>', 'R<sub>1</sub>t<sub>2</sub> + t<sub>1</sub>')}`,
+    after: st => st.animate(1000, t => { m = t; }),
+  };
+};
+
+const inverseWhy = (k, R, a, b) => {
+  const Rt = apply(tr(R), k.t);
+  return x => slip(x, [
+    [-k.t[k.i], `You negated t but did not rotate it. −t is the walk from the ${b} back to the ${a}, still measured along the ${a}'s axes. The ${b} frame measures along its own axes: apply Rᵀ as well.`],
+    [Rt[k.i], `Right size, wrong sign. Either the minus went missing (Rᵀ·t is the walk from ${a} to ${b}; you want the walk back) or −t was turned with R where it needs Rᵀ.`],
+    [k.t[k.i], `That is t itself: the ${b} origin seen from the ${a}. The question runs the other way.`],
+    ...others(sc(Rt, -1), k.i),
+  ], `Walk from the ${b} origin back to the ${a} origin: that is −t = ${vec(sc(k.t, -1))} along the ${a}'s axes. Then re-measure it along the ${b}'s axes with Rᵀ, the turn backwards, which sends ${rule(tr(R))}.`);
+};
+
+const INVERT = [
+  { ax: 'z', deg: 90, t: [4, 2, 1], i: 0 },
+  { ax: 'z', deg: -90, t: [3, 1, 2], i: 1 },
+  { ax: 'x', deg: 90, t: [1, 2, 4], i: 2 },
+];
+const invertPose = v => {
+  const k = pick(v, INVERT), R = R3(k.ax, k.deg), F = { R, t: k.t }, ans = inv(F).t;
+  let m = 0;
+  return {
+    concept: 'pose-inverse',
+    prompt: `${Tn('cam', 'tooth')} = (R, t): the camera sees the tooth frame turned <b>${turn3(k.ax, k.deg)}</b>, origin at <b>${V(k.t, 't = ')}</b>. Now stand on the tooth and look back. <b>What is the ${XYZ[k.i]}-coordinate of the camera's origin in the tooth frame?</b>`,
+    view: [-5, 5, -3.6, 3.6],
+    visual: st => {
+      const pts = [[0, 0, 0], k.t], view = scene(st, [...pts, ...tips(CAM), ...tips(F)]);
+      st.draw = () => {
+        const P = view();
+        floor(st, P, pts); st.line(P([0, 0, 0]), P(k.t), C.ghost, 1.5, [2, 5]);
+        block(st, P, F); if (m) legs3(st, P, F, ans, m);
+        frame3(st, P, CAM, 'camera'); frame3(st, P, F, 'tooth');
+        if (m === 1) st.ring(P([0, 0, 0]), C.acc, 10);
+        st.readout(m === 1 ? `&nbsp;Rᵀ·t = ${vec(apply(tr(R), k.t))}<br>−Rᵀ·t = <span class="ca">${vec(ans)}</span> on tooth axes` : '');
+      };
+    },
+    input: { type: 'number', answer: ans[k.i], unit: 'mm', why: inverseWhy(k, R, 'camera', 'tooth') },
+    explain: `<b>The inverse of (R, t) is (Rᵀ, −Rᵀ·t)</b>, not (Rᵀ, −t). The walk back to the camera is −t along the camera's axes; Rᵀ re-measures it along the tooth's: ${vec(ans)}. Inverting swaps the names: ${Tn('cam', 'tooth', 1)} = ${Tn('tooth', 'cam')} = ${blk('Rᵀ', '−Rᵀt')}. A pose never needs a general matrix inverse.`,
+    after: st => st.animate(1300, t => { m = t; }),
+  };
+};
+
+const relativeWhy = (k, R) => {
+  const d = sub(k.p, k.t), ans = apply(tr(R), d);
+  return x => slip(x, [
+    [d[k.i], `You subtracted the tooth origin but did not rotate. ${vec(d)} is the offset from tooth origin to tip along the camera's axes. Re-measure it along the tooth's axes: apply Rᵀ.`],
+    [-ans[k.i], `Right size, wrong sign. Either the offset was turned with R where it needs Rᵀ (the turn backwards sends ${rule(tr(R))}), or the subtraction ran the wrong way round: it is tip minus tooth origin, p − t.`],
+    [sub(apply(tr(R), k.p), k.t)[k.i], 'You rotated the tip but subtracted t unrotated. Subtract first, while both are camera coordinates, then rotate the difference: Rᵀ·(p − t).'],
+    [k.p[k.i], 'That is the tip in camera coordinates: the number that changes every time the mount flexes. The question is about the tooth frame.'],
+    ...others(ans, k.i),
+  ], `Two steps. Offset from tooth origin to tip, both in camera coordinates: p − t = ${vec(d)}. Then re-measure it along the tooth's axes with Rᵀ, which sends ${rule(tr(R))}.`);
+};
+
+const WOBBLE = [
+  { ax: 'z', deg: 90, t: [1, 2, 5], p: [2, 5, 3], i: 0 },
+  { ax: 'x', deg: 180, t: [2, 1, 7], p: [3, 6, 5], i: 1 },
+  { ax: 'z', deg: -90, t: [1, 2, 7], p: [3, 6, 4], i: 1 },
+];
+const wobble = v => {
+  const k = pick(v, WOBBLE), R = R3(k.ax, k.deg), ans = apply(tr(R), sub(k.p, k.t));
+  // drawing world: the camera starts at the top looking down its own z-axis; tooth and bur never move in it
+  const D = R3('x', 180), tooth = { R: mul(D, R), t: apply(D, k.t) }, tip = apply(D, k.p), top = add(tip, [0.9, -0.5, 2.8]);
+  const camAt = q => ({ R: mul(D, mul(R3('y', 7 * q[0]), R3('x', 8 * q[1]))), t: [q[0], 0, q[1]] });
+  let q = [0, 0], off = [0, 0], reveal = false;
+  return {
+    concept: 'pose-relative',
+    prompt: `One video frame: the camera sees the tooth frame turned ${turn3(k.ax, k.deg)}, origin at <b>${V(k.t, 't = ')}</b>, and the bur tip at <b>${V(k.p, 'p = ')}</b>. Tooth and bur hold still; the elastic mount does not. <b>Drag the camera.</b> What is the tip's <b>${XYZ[k.i]}-coordinate in the tooth frame?</b>`,
+    view: [-5, 5, -4, 4],
+    visual: st => {
+      const view = scene(st, [[-2.4, 0, 1.6], [2.4, 0, -1], tooth.t, add(tooth.t, [0, 0, -1.6]), tip, top], { orbit: false, yaw: 38, pitch: 26, pad: 0.84 });
+      st.draw = () => {
+        const P = view(), Cm = camAt(q), Ci = inv(Cm), seen = comp(Ci, tooth), seenTip = at(Ci, tip), rel = apply(tr(seen.R), sub(seenTip, seen.t));
+        st.line(P(Cm.t), P(tooth.t), C.dim, 1, [2, 5]); st.line(P(Cm.t), P(tip), C.dim, 1, [2, 5]);
+        block(st, P, tooth); st.line(P(tip), P(top), 'rgba(232,234,237,.2)', 9); frame3(st, P, tooth, 'tooth');
+        camBody(st, P, Cm); frame3(st, P, Cm, 'camera');
+        if (reveal) { legs3(st, P, tooth, ans); st.arrow(P(tooth.t), P(tip), C.acc, 3); }
+        st.dot(P(tip), C.acc); tag(st, P(tip), 'tip', C.acc);
+        st.readout(`camera sees tooth at ${vec(seen.t)}<br>camera sees tip&nbsp;&nbsp; at ${vec(seenTip)}` + (reveal ? `<br><span class="ca">tip in tooth frame&nbsp; ${vec(rel)}, always</span>` : ''));
+      };
+      st.drag((w, ph) => {
+        const g = sc(w, 1 / view.s);
+        if (ph === 'down') off = sub(q, g); else q = [clamp(g[0] + off[0], -2.4, 2.4), clamp(g[1] + off[1], -1, 1.6)];
+      });
+    },
+    input: { type: 'number', answer: ans[k.i], unit: 'mm', why: relativeWhy(k, R) },
+    explain: `<b>${Tn('tooth', 'bur')} = ${Tn('cam', 'tooth', 1)} · ${Tn('cam', 'bur')}</b>. For the tip that is Rᵀ·(p − t) = ${vec(ans)}. Keep dragging: both camera readings change, the yellow line does not. The camera enters once inverted and once not, so it cancels. This is why your pipeline has no camera-to-bur offset to calibrate: on an elastic mount there is none. Every frame, estimate tooth and bur separately, then divide the camera out.`,
+    after: st => { reveal = true; st.redraw(); },
+  };
+};
+
+// ---- problems ----
+
+const P_APPLY = [
+  { ax: 'y', deg: 90, t: [2, 3, 6], p: [1, 2, 4], i: 0 },
+  { ax: 'x', deg: 90, t: [1, 4, 2], p: [2, 1, 3], i: 1 },
+  { ax: 'x', deg: 180, t: [3, 2, 5], p: [1, 4, 2], i: 2 },
+  { ax: 'y', deg: -90, t: [4, 1, 3], p: [2, 3, 1], i: 2 },
+  { ax: 'x', deg: -90, t: [2, 5, 1], p: [3, 1, 4], i: 1 },
+];
+const pApply = v => {
+  const k = pick(v, P_APPLY), R = R3(k.ax, k.deg), Rp = apply(R, k.p), q = add(Rp, k.t);
+  return {
+    concept: 'pose-apply',
+    prompt: `Registration places the scan frame in the camera frame: turned <b>${turn3(k.ax, k.deg)}</b> (right-hand rule), origin at <b>${V(k.t, 't = ')}</b> mm. An STL vertex is at <b>${V(k.p)}</b> in scan coordinates. <b>What is its ${XYZ[k.i]}-coordinate in the camera frame?</b>`,
+    input: { type: 'number', answer: q[k.i], unit: 'mm', why: applyWhy(k, R, 'camera', 'scan') },
+    explain: `p<sub>cam</sub> = R·p + t. ${turn3(k.ax, k.deg)} leaves ${k.ax} alone and sends ${rule(R)}, so R·p = ${vec(Rp)}. Then shift: ${vec(Rp)} + ${vec(k.t)} = <b>${vec(q)}</b>. Rotate first, then shift.`,
+  };
+};
+
+const P_INVERSE = [
+  { ax: 'x', deg: 90, t: [2, 3, 1], i: 1 },
+  { ax: 'y', deg: 90, t: [4, 1, 2], i: 0 },
+  { ax: 'z', deg: -90, t: [1, 3, 5], i: 0 },
+  { ax: 'y', deg: -90, t: [3, 2, 1], i: 2 },
+  { ax: 'z', deg: 90, t: [2, 5, 3], i: 1 },
+];
+const pInverse = v => {
+  const k = pick(v, P_INVERSE), R = R3(k.ax, k.deg), ans = inv({ R, t: k.t }).t;
+  return {
+    concept: 'pose-inverse',
+    prompt: `${Tn('cam', 'tooth')} = (R, t) with R = ${mat(R)} and <b>${V(k.t, 't = ')}</b> mm. Its inverse is ${Tn('tooth', 'cam')} = (Rᵀ, t′). <b>What is the ${XYZ[k.i]}-component of t′?</b>`,
+    input: { type: 'number', answer: ans[k.i], unit: 'mm', why: inverseWhy(k, R, 'camera', 'tooth') },
+    explain: `t′ = −Rᵀ·t. The rows of R are the columns of Rᵀ, so Rᵀ·t = ${vec(apply(tr(R), k.t))} and t′ = <b>${vec(ans)}</b>. Negating t alone gives ${vec(sc(k.t, -1))}: the walk back to the camera, but along the camera's axes. Rᵀ re-measures it along the tooth's.`,
+  };
+};
+
+const P_MATRIX = [
+  { ax: 'x', deg: 90, t: [4, 2, 7], j: 2, d: 5, i: 1 },
+  { ax: 'y', deg: 90, t: [3, 5, 2], j: 0, d: 4, i: 2 },
+  { ax: 'z', deg: -90, t: [6, 1, 3], j: 0, d: 5, i: 1 },
+  { ax: 'y', deg: -90, t: [8, 2, 4], j: 2, d: 3, i: 0 },
+  { ax: 'z', deg: 90, t: [2, 3, 5], j: 1, d: 4, i: 0 },
+];
+const pMatrix = v => {
+  const k = pick(v, P_MATRIX), R = R3(k.ax, k.deg), F = { R, t: k.t }, a = col(R, k.j), pt = add(k.t, sc(a, k.d));
+  return {
+    concept: 'pose-matrix',
+    prompt: `A robot reports its drill pose, in mm:<br>${Tn('base', 'tool')} = ${mat(hom(F))}<br>A point on the drill is <b>${k.d} mm along the tool's own ${XYZ[k.j]}-axis</b> from the tool origin. <b>What is that point's ${XYZ[k.i]}-coordinate in the base frame?</b>`,
+    input: {
+      type: 'number', answer: pt[k.i], unit: 'mm',
+      why: x => slip(x, [
+        [k.t[k.i] - k.d * a[k.i], `The point went the wrong way along ${XYZ[k.i]}. Either a sign slip, or you read row ${k.j + 1} where the tool's ${XYZ[k.j]}-axis is column ${k.j + 1}, ${vec(a)}: its ${XYZ[k.i]}-entry is ${a[k.i]}. Rows belong to the inverse rotation.`],
+        [k.d * a[k.i], `That is ${k.d} mm along the axis, but starting from the base origin. Start from the tool origin: the last column, ${vec(k.t)}.`],
+        [k.t[k.i], `That is the tool origin itself (last column). From there go ${k.d} mm along the tool's ${XYZ[k.j]}-axis: column ${k.j + 1}, ${vec(a)}.`],
+        ...others(pt, k.i),
+      ], `Columns one to three are the tool's x, y, z axes in base coordinates; the fourth is the tool origin. The point is (last column) + ${k.d}·(column ${k.j + 1}).`),
+    },
+    explain: `Read the columns. The tool's ${XYZ[k.j]}-axis points along column ${k.j + 1}, ${vec(a)}, and the tool origin sits at the last column, ${vec(k.t)}. The point is ${vec(k.t)} + ${k.d}·${vec(a)} = <b>${vec(pt)}</b>. This is ${Tn('base', 'tool')} applied to the point's tool coordinates, read straight off the matrix.`,
+  };
+};
+
+const P_COMPOSE = [
+  { n: ['scan', 'tooth', 'bur'], r1: ['x', 90], t1: [2, 1, 3], r2: ['z', 90], t2: [1, 4, 2], i: 1 },
+  { n: ['cam', 'tooth', 'bur'], r1: ['y', 90], t1: [2, 3, 5], r2: ['x', 90], t2: [2, 1, 3], i: 2, flip: 1 },
+  { n: ['world', 'cam', 'tooth'], r1: ['z', -90], t1: [1, 5, 2], r2: ['x', 180], t2: [3, 1, 6], i: 1 },
+  { n: ['base', 'tool', 'tip'], r1: ['y', -90], t1: [3, 2, 1], r2: ['z', 90], t2: [5, 2, 4], i: 0, flip: 1 },
+  { n: ['cam', 'tooth', 'bur'], r1: ['x', -90], t1: [2, 1, 4], r2: ['y', 90], t2: [1, 3, 4], i: 2 },
+];
+const pCompose = v => {
+  const k = pick(v, P_COMPOSE), [a, b, c] = k.n, A = { R: R3(...k.r1), t: k.t1 }, B = { R: R3(...k.r2), t: k.t2 }, AB = comp(A, B);
+  const lines = [`${Tn(a, b)}: ${turn3(...k.r1)}, then shift <b>${V(k.t1)}</b>`, `${Tn(b, c)}: ${turn3(...k.r2)}, then shift <b>${V(k.t2)}</b>`];
+  return {
+    concept: 'pose-compose',
+    prompt: `Two poses, in mm:<br>${(k.flip ? lines.reverse() : lines).join('<br>')}<br><b>What is the ${XYZ[k.i]}-component of the translation of ${Tn(a, c)}?</b>`,
+    input: { type: 'number', answer: AB.t[k.i], unit: 'mm', why: composeWhy(k, k.n) },
+    explain: `${Tn(a, c)} = ${Tn(a, b)} · ${Tn(b, c)}: the inner name, ${b}, cancels. Its translation is the ${c} origin converted into ${a} coordinates: rotate ${vec(k.t2)} by the outer rotation (${turn3(...k.r1)} sends ${rule(A.R)}), then add the outer shift: ${vec(apply(A.R, k.t2))} + ${vec(k.t1)} = <b>${vec(AB.t)}</b>. The inner rotation never touches a translation.`,
+  };
+};
+
+const P_RELATIVE = [
+  { ax: 'y', deg: 90, t: [2, 1, 6], p: [4, 3, 5], i: 0 },
+  { ax: 'x', deg: 90, t: [1, 3, 6], p: [2, 5, 3], i: 1 },
+  { ax: 'z', deg: 90, t: [3, 1, 8], p: [5, 4, 6], i: 0 },
+  { ax: 'x', deg: -90, t: [2, 1, 8], p: [4, 2, 5], i: 2 },
+  { ax: 'y', deg: -90, t: [2, 1, 5], p: [6, 4, 3], i: 0 },
+];
+const pRelative = v => {
+  const k = pick(v, P_RELATIVE), R = R3(k.ax, k.deg), d = sub(k.p, k.t), ans = apply(tr(R), d);
+  return {
+    concept: 'pose-relative',
+    prompt: `One video frame, in mm. Registration: the camera sees the tooth frame turned <b>${turn3(k.ax, k.deg)}</b>, origin at <b>${V(k.t)}</b>. Tracking: it sees the bur tip at <b>${V(k.p)}</b>. <b>What is the tip's ${XYZ[k.i]}-coordinate in the tooth frame?</b>`,
+    input: { type: 'number', answer: ans[k.i], unit: 'mm', why: relativeWhy(k, R) },
+    explain: `${Tn('tooth', 'bur')} = ${Tn('cam', 'tooth', 1)} · ${Tn('cam', 'bur')}. For the tip: Rᵀ·(p − t) = Rᵀ·${vec(d)} = <b>${vec(ans)}</b>, since the turn backwards sends ${rule(tr(R))}. The camera is in both readings and cancels, so the answer survives any flex of the mount. Do this on every frame and the answers trace the bur's path on the tooth.`,
+  };
+};
+
+Reps.lesson({
+  id: 'u1-se3',
+  title: 'Poses: rotation plus position',
+  learn: [applyPose, readPose, composePose, invertPose, wobble],
+  problems: [pApply, pInverse, pMatrix, pCompose, pRelative],
+});
+</script>
+</body>
+</html>

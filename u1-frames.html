@@ -8,64 +8,96 @@
 </head>
 <body>
 <script>
-const { C, rp, add, sub, vec, pick } = Reps;
+const { C, rp, add, sub, pick, mat } = Reps;
+const vec = p => Reps.vec(p).replace(/ /g, '\u00a0');                // "(3, 1)" that never breaks across lines
 const near = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 0.1;
+const eq = (x, y) => Math.abs(x - y) < 0.011;
 const q = (p, deg) => rp(p, deg).map(v => Math.round(v) || 0);   // exact quarter turns
 const turn = d => d === 90 ? 'a quarter turn counter-clockwise' : 'a quarter turn clockwise';
+const Rm = d => d === 90 ? [[0, -1], [1, 0]] : [[0, 1], [-1, 0]];
+// which way a quarter-turned frame's x-arrow (axis 0) or y-arrow (axis 1) points on the page
+const way = (deg, axis) => { const [x, y] = q(axis ? [0, 1] : [1, 0], deg); return x > 0 ? 'right' : x < 0 ? 'left' : y > 0 ? 'up' : 'down'; };
 const Tn = (a, b, inv) => `T<sub>${a},${b}</sub>${inv ? '⁻¹' : ''}`;
 const inFrame = (p, o, deg) => rp(sub(p, o), -deg);              // coordinates of world point p in frame (o, deg)
 // dashed "walk along x, then along y" from a frame's origin to p: its coordinates, drawn
 const legs = (st, o, deg, p) => { const c = inFrame(p, o, deg), m = add(o, rp([c[0], 0], deg)); st.line(o, m, C.x, 1.5, [4, 4]); st.line(m, p, C.y, 1.5, [4, 4]); };
+// Explains a wrong tile chain. picked: [[a, b, inverted?], ...] in the order placed. want: [a, c].
+const chainWhy = (picked, want, sameTiles) => {
+  const eff = picked.map(([a, b, inv]) => inv ? [b, a] : [a, b]), last = eff[eff.length - 1];
+  const k = eff.findIndex((p, j) => j + 1 < eff.length && p[1] !== eff[j + 1][0]);
+  const read = `Write out the subscripts${picked.some(t => t[2]) ? ' (inverting swaps them)' : ''}: ${eff.map(p => p.join(',')).join(' · ')}. `;
+  if (k >= 0) return (sameTiles ? 'Right tiles, wrong order. ' : '') + read + `Where two matrices meet, the inner subscripts must match, and <b>${eff[k][1]} | ${eff[k + 1][0]}</b> do not. Read right to left: ${Tn(...picked[k + 1])} hands over ${eff[k + 1][0]}-coordinates, but ${Tn(...picked[k])} expects ${eff[k][1]}-coordinates.`;
+  return read + `The inner subscripts match, so this is a real chain, but its outer pair reads ${eff[0][0]},${last[1]}: it converts ${last[1]} → ${eff[0][0]}. You were asked for ${Tn(...want)}, which converts ${want[1]} → ${want[0]}.`;
+};
+const sameSet = (o, answer) => [...o].sort().join() === [...answer].sort().join();
 
 // ---- learn ----
 
+const CROWN = [[-.7, -.8], [3.3, -.8], [3.6, .9], [3, 2], [2.2, 1.3], [1.4, 1.8], [.6, 1.3], [-.2, 1.8], [-.9, .8]];
 const sameTip = v => {
-  const tooth = [-3.5, -3.5], tip = [-0.5, -1.5], tilt = 30;
-  let cam = [1, 1.5], off = [0, 0], reveal = false;
+  const tooth = [-3.7, -2.1], tip = add(tooth, [3, 2]), cam0 = [.8, 1.5];
+  let cam = cam0, off = [0, 0], reveal = false, live = false;
+  const tilt = () => 20 + 8 * (cam[0] - cam0[0]) - 6 * (cam[1] - cam0[1]);
   const k = pick(v, [
-    { ask: 'Which description of the tip changes when the camera moves?', opts: [
-      { html: 'Its coordinates in the tooth frame', why: 'The tooth frame did not move and the tip did not move. The walk from the tooth origin to the tip is the same walk.' },
+    { ask: 'Which numbers for the tip will change?', opts: [
+      { html: 'Its coordinates in the tooth frame', why: 'The tooth frame will not move and the tip will not move. The walk from the tooth origin to the tip stays the same walk.' },
       { html: 'Its coordinates in the camera frame', correct: true },
-      { html: 'Both', why: 'Only one of the two frames moved. Coordinates are a walk from a frame\'s origin along its axes; the tooth frame\'s walk is untouched.' },
-      { html: 'Neither. The tip did not move.', why: 'The tip stayed put, but its coordinates are measured from a frame. Move the frame and the numbers change even though the point does not.' }] },
-    { ask: 'Which description of the tip stays the same when the camera moves?', opts: [
+      { html: 'Both', why: 'Only one of the two frames moves. Coordinates are a walk from a frame\'s origin along its axes, and the tooth frame\'s walk is untouched.' },
+      { html: 'Neither. The tip does not move.', why: 'The tip stays put, but its coordinates are measured from a frame. Move the frame and the numbers change even though the point does not.' }] },
+    { ask: 'Which numbers for the tip will stay the same?', opts: [
       { html: 'Its coordinates in the camera frame', why: 'Those are measured from the camera\'s origin along the camera\'s axes. Move the camera and that walk changes.' },
-      { html: 'Neither. Moving any frame changes all coordinates.', why: 'Coordinates in one frame only depend on that frame and the point. The tooth frame and the tip both stayed still.' },
+      { html: 'Neither. Moving any frame changes all coordinates.', why: 'Coordinates in one frame depend only on that frame and the point. The tooth frame and the tip both stay still.' },
       { html: 'Its coordinates in the tooth frame', correct: true },
-      { html: 'Both', why: 'The dashed walk from the camera origin visibly changes as you drag.' }] },
+      { html: 'Both. The tip does not move.', why: 'The tip stays put, but the camera\'s dashed walk to it starts at the camera. Move the camera and that walk, and its numbers, change.' }] },
   ]);
   return {
     concept: 'frame-coords',
-    prompt: `One bur tip (yellow dot), two frames. The dashed lines are each frame's coordinates for the tip: walk along its red axis, then its green axis. The camera hangs on an elastic mount. <b>Drag the camera frame around.</b> ${k.ask}`,
+    prompt: `A bur tip rests on a tooth. Each frame locates it by a dashed walk from its own origin: along red, then green. The camera's elastic mount is about to flex. Tooth and bur hold still. <b>${k.ask}</b>`,
+    view: [-5, 5, -3.2, 3.2],
     visual: st => {
       st.draw = () => {
-        legs(st, tooth, 0, tip); legs(st, cam, tilt, tip);
-        st.frame(tooth, 0, 'tooth'); st.frame(cam, tilt, 'camera'); st.dot(tip, C.acc, 'tip');
-        st.readout(reveal ? `tip in tooth: ${vec(inFrame(tip, tooth, 0))} &nbsp; tip in camera: ${vec(inFrame(tip, cam, tilt))}` : '');
+        st.poly(CROWN.map(p => add(tooth, p)), C.ghost, 'rgba(255,255,255,.05)', 1.5);
+        st.line(tip, add(tip, [3.2, -.9]), C.ghost, 6);
+        legs(st, tooth, 0, tip); legs(st, cam, tilt(), tip);
+        st.frame(tooth, 0, 'tooth', 1.3); st.frame(cam, tilt(), null, 1.3); st.label(add(cam, rp([1, -.75], tilt())), 'camera'); st.dot(tip, C.acc, 'tip');
+        st.readout(reveal ? `<span class="ca">tip in tooth frame: ${vec(inFrame(tip, tooth, 0))}</span><br>tip in camera frame: ${vec(inFrame(tip, cam, tilt()))}` : '');
       };
-      st.drag((w, ph) => { if (ph === 'down') off = sub(cam, w); else cam = add(w, off).map(x => Math.max(-4, Math.min(4, x))); });
+      st.drag((w, ph) => { if (!live) return; if (ph === 'down') off = sub(cam, w); else cam = add(w, off).map((x, j) => Math.max(j ? -2.6 : -4, Math.min(j ? 1.7 : 3.4, x))); });
     },
     input: { type: 'choice', options: k.opts },
-    explain: 'A point is a place. Its coordinates are a description of that place from one frame. Same point, different frame, different numbers. Keep dragging and watch the readout: the tooth-frame numbers never flinch.',
-    after: st => { reveal = true; st.redraw(); },
+    explain: 'A point is a place. Its coordinates are a description of that place from one frame. Same point, different frame, different numbers. <b>Now drag the camera yourself</b>: the tooth-frame numbers never flinch.',
+    after: st => { reveal = true; st.animate(1500, t => { cam = [cam0[0] + 1.6 * t + 1.2 * Math.sin(6.283 * t) * (1 - t), cam0[1] - .4 * t + .3 * Math.sin(9.42 * t) * (1 - t)]; live = t === 1; }); },
   };
 };
 
-const FR = [{ o: [4, 2], deg: 90, pb: [1, 0], pa: [4, 5] }, { o: [3, 1], deg: 90, pb: [2, 1], pa: [1, 3] }, { o: [2, 4], deg: -90, pb: [2, 0], pa: [5, 2] }, { o: [1, 3], deg: -90, pb: [1, 2], pa: [3, 1] }];
+const FR = [
+  { o: [4, 2], deg: 90, pb: [2, 1], pa: [5, 6], i: 0 },
+  { o: [2, 4], deg: -90, pb: [2, 1], pa: [6, 1], i: 1 },
+  { o: [3, 1], deg: 90, pb: [3, 2], pa: [2, 5], i: 1 },
+  { o: [1, 5], deg: -90, pb: [2, 3], pa: [4, 3], i: 0 },
+];
 
 const toCamera = v => {
-  const { o, deg, pb } = pick(v, FR), ans = add(q(pb, deg), o);
+  const { o, deg, pb } = pick(v, FR), mid = add(o, q([pb[0], 0], deg)), ans = add(q(pb, deg), o);
   let shown = false;
   return {
     concept: 'frame-convert',
-    prompt: `This grid is the <b>camera frame</b>. The tooth frame sits at <b>${vec(o)}</b>, turned ${turn(deg)}. The bur tip is at <b>${vec(pb)}</b> in <i>tooth</i> coordinates. <b>Tap the tip.</b>`,
+    prompt: `This grid is the <b>camera frame</b>. The tooth frame sits at <b>${vec(o)}</b>, turned ${turn(deg)}. In <i>tooth</i> coordinates the bur tip is at <b>${vec(pb)}</b>: ${pb[0]} along the tooth's red arrow (drawn), then ${pb[1]} along its green. <b>Tap the tip.</b>`,
     view: [-1, 7, -1, 7],
-    visual: st => { st.draw = () => { st.grid(); st.frame(o, deg, 'tooth', 1); if (shown) { legs(st, o, deg, ans); st.dot(ans, C.acc); } }; },
+    visual: st => {
+      st.draw = () => {
+        st.grid(); st.line(o, mid, C.x, 1.5, [4, 4]); st.frame(o, deg, 'tooth', 1); st.dot(mid, C.ghost, null, 4);
+        if (shown) { st.line(mid, ans, C.y, 1.5, [4, 4]); st.dot(ans, C.acc); }
+      };
+    },
     input: {
       type: 'point', answer: ans,
-      why: w => near(w, pb) ? `That is ${vec(pb)} in camera coordinates. The tip's numbers are tooth coordinates: start the walk at the tooth origin.`
-        : near(w, add(pb, o)) ? 'You started at the tooth origin, good, but then walked along the camera\'s axes. Walk along the tooth\'s red and green arrows.'
-        : `Start at the tooth origin. Walk ${pb[0]} along the tooth's red arrow, then ${pb[1]} along its green arrow.`,
+      why: w => near(w, pb) ? `That is ${vec(pb)} in camera coordinates. The tip's numbers are tooth coordinates: the walk starts at the tooth origin.`
+        : near(w, add(pb, o)) ? 'You started at the tooth origin, good, but then walked along the camera\'s grid axes. Walk along the tooth\'s red and green arrows.'
+        : near(w, mid) ? `That is the end of the red leg, ${pb[0]} along the tooth's red arrow. The tip is ${pb[1]} further, along the green arrow.`
+        : near(w, sub(mid, q([0, pb[1]], deg))) ? `Right length, wrong direction: you walked against the green arrow. The tooth's green arrow points ${way(deg, 1)} on this grid.`
+        : near(w, add(q(pb, -deg), o)) ? `That is the walk for a tooth frame turned the other way. Here the tooth's red arrow points ${way(deg, 0)} on this grid and its green arrow points ${way(deg, 1)}.`
+        : `The last leg starts where the dashed red line ends and runs ${pb[1]} along the tooth's green arrow. That arrow points ${way(deg, 1)} on this grid; the likely slip is following the grid's own y instead.`,
     },
     explain: `The walk is ${pb[0]} along tooth-x and ${pb[1]} along tooth-y, starting from the tooth origin: <b>p<sub>cam</sub> = R·p<sub>tooth</sub> + t</b> = ${vec(q(pb, deg))} + ${vec(o)} = ${vec(ans)}. Here (R, t) is the pose of the tooth frame as seen from the camera. The pose of frame b in frame a is exactly the transform that converts b-coordinates into a-coordinates. Call it ${Tn('cam', 'tooth')}.`,
     after: st => { shown = true; st.redraw(); },
@@ -73,7 +105,7 @@ const toCamera = v => {
 };
 
 const toTooth = v => {
-  const { o, deg, pa } = pick(v, FR), ans = q(sub(pa, o), -deg), i = ans[0] !== 0 ? 0 : 1;
+  const { o, deg, pa, i } = pick(v, FR), s = sub(pa, o), ans = q(s, -deg), ax = ['red', 'green'][i];
   let shown = false;
   return {
     concept: 'frame-inverse',
@@ -82,106 +114,96 @@ const toTooth = v => {
     visual: st => { st.draw = () => { st.grid(); st.frame(o, deg, 'tooth', 1); st.dot(pa, C.acc, 'glint'); if (shown) legs(st, o, deg, pa); }; },
     input: {
       type: 'number', answer: ans[i],
-      why: x => Math.abs(x - sub(pa, o)[i]) < 0.01 ? `That is the offset from the tooth origin measured along the <i>camera's</i> axes. Measure the same offset along the tooth's ${i ? 'green' : 'red'} arrow.`
-        : Math.abs(x - pa[i]) < 0.01 ? 'That is still the camera coordinate. Walk from the tooth origin instead.'
-        : `Find the walk from the tooth origin to the glint: how far along the tooth's red arrow, then how far along its green arrow?`,
+      why: x => eq(x, s[i]) ? `That is the offset from the tooth origin measured along the <i>camera's</i> ${'xy'[i]}-axis. The tooth's axes are turned: measure along the tooth's ${ax} arrow, which points ${way(deg, i)} on this grid.`
+        : eq(x, pa[i]) ? 'That is still the camera coordinate, measured from the grid\'s origin. Tooth coordinates are a walk that starts at the tooth origin.'
+        : eq(x, -ans[i]) ? `Right size, wrong sign. The tooth's ${ax} arrow points ${way(deg, i)} on this grid. Is the glint on that side of the tooth origin, or the other?`
+        : eq(x, ans[1 - i]) ? `That is how far the glint is along the tooth's ${['green', 'red'][i]} arrow: its tooth ${'yx'[i]}-coordinate. The question asks for ${'xy'[i]}, along the ${ax} arrow.`
+        : `The likely slip is measuring from the grid's origin, or along the grid's axes. Check by walking: start at the tooth origin ${vec(o)} and go to the glint, moving only along the tooth's arrows. Its ${ax} arrow points ${way(deg, i)} on this grid. Count the squares along it.`,
     },
-    explain: `Subtract the tooth origin, then measure along the tooth's own axes: <b>p<sub>tooth</sub> = Rᵀ(p<sub>cam</sub> − t)</b> = ${vec(ans)}. That is the inverse of ${Tn('cam', 'tooth')}. Naming rule: <b>T<sub>a,b</sub> converts b-coordinates to a-coordinates</b>, and inverting it swaps the subscripts: ${Tn('cam', 'tooth', 1)} = ${Tn('tooth', 'cam')}.`,
+    explain: `Subtract the tooth origin, then measure along the tooth's own axes: <b>p<sub>tooth</sub> = Rᵀ(p<sub>cam</sub> − t)</b> = Rᵀ·${vec(s)} = ${vec(ans)}. That is the inverse of ${Tn('cam', 'tooth')}. Naming rule: <b>T<sub>a,b</sub> converts b-coordinates to a-coordinates</b>, and inverting it swaps the subscripts: ${Tn('cam', 'tooth', 1)} = ${Tn('tooth', 'cam')}.`,
     after: st => { shown = true; st.redraw(); },
-  };
-};
-
-const chainVisual = st => {
-  const F = { camera: [[-3, 2.5], -20], tooth: [[-2, -3], 10], bur: [[2, 0], 100] };
-  st.draw = () => {
-    st.line(F.camera[0], F.tooth[0], C.ghost, 1.5, [5, 5]); st.line(F.tooth[0], F.bur[0], C.ghost, 1.5, [5, 5]);
-    for (const n in F) st.frame(F[n][0], F[n][1], n, 1.3);
   };
 };
 
 const chain = v => {
   const [a, b, c] = pick(v, [['cam', 'tooth', 'bur'], ['world', 'cam', 'tooth'], ['scan', 'tooth', 'bur']]);
+  const tiles = [[b, c], [c, b], [a, b], [b, a]], answer = [2, 0];
+  const F = [[[-3.4, 1.1], -20], [[-1.2, -1.7], 10], [[2.8, 0], 100]];
+  let lit = false;
   return {
     concept: 'frame-chain',
-    prompt: `T<sub>a,b</sub> converts b-coordinates into a-coordinates. You know ${Tn(a, b)} and ${Tn(b, c)}. A point is given in <b>${c}</b> coordinates and you want it in <b>${a}</b> coordinates. <b>Build ${Tn(a, c)}.</b> (The rightmost matrix touches the point first.)`,
-    view: [-5, 5, -4.5, 4.5],
-    visual: chainVisual,
-    input: {
-      type: 'order', tiles: [Tn(b, c), Tn(c, b), Tn(a, b), Tn(b, a)], answer: [2, 0],
-      why: o => o.join() === '0,2' ? `Read right to left. The point arrives in ${c} coordinates and meets ${Tn(a, b)} first, but that matrix expects ${b} coordinates. Convert ${c} → ${b} first, so ${Tn(b, c)} goes on the right.`
-        : `Check the subscripts like dominoes: the two inner ones must match, and the two outer ones must read ${a},${c}.`,
+    prompt: `T<sub>a,b</sub> converts b-coordinates into a-coordinates. A point is known in <b>${c}</b> coordinates and you want it in <b>${a}</b> coordinates. <b>Build ${Tn(a, c)}.</b> The rightmost matrix touches the point first.`,
+    view: [-5, 5, -3, 3],
+    visual: st => {
+      st.draw = () => {
+        for (const j of [0, 1]) {
+          const from = F[j + 1][0], d = sub(F[j][0], from);
+          if (lit) st.arrow(add(from, d.map(x => x * .2)), add(from, d.map(x => x * .8)), C.acc, 2); else st.line(from, F[j][0], C.ghost, 1.5, [5, 5]);
+        }
+        F.forEach(([o, deg], j) => st.frame(o, deg, [a, b, c][j], 1.2));
+      };
     },
-    explain: `<b>${Tn(a, c)} = ${Tn(a, b)} · ${Tn(b, c)}</b>. The inner subscripts match and cancel like dominoes; the outer ones are what is left. The point goes ${c} → ${b} → ${a}.`,
+    input: {
+      type: 'order', tiles: tiles.map(t => Tn(...t)), answer,
+      why: o => chainWhy(o.map(j => tiles[j]), [a, c], sameSet(o, answer)),
+    },
+    explain: `<b>${Tn(a, c)} = ${Tn(a, b)} · ${Tn(b, c)}</b>. The inner subscripts match and cancel like dominoes; the outer ones are what is left. The point goes ${c} → ${b} → ${a} (yellow arrows).`,
+    after: st => { lit = true; st.redraw(); },
   };
 };
 
 const relative = v => {
   const k = pick(v, [
-    { want: ['tooth', 'bur'], answer: [1, 2], say: `${Tn('cam', 'tooth', 1)} · ${Tn('cam', 'bur')} = ${Tn('tooth', 'cam')} · ${Tn('cam', 'bur')}` },
-    { want: ['bur', 'tooth'], answer: [3, 0], say: `${Tn('cam', 'bur', 1)} · ${Tn('cam', 'tooth')} = ${Tn('bur', 'cam')} · ${Tn('cam', 'tooth')}` },
+    { want: ['tooth', 'bur'], answer: [1, 2], tooth: [4, -2], bur: [5, 2] },
+    { want: ['bur', 'tooth'], answer: [3, 0], tooth: [3, -2], bur: [5, 2] },
   ]);
-  return {
-    concept: 'frame-relative',
-    prompt: `From a single video frame you estimate two poses, both seen from the camera: ${Tn('cam', 'tooth')} (registration) and ${Tn('cam', 'bur')} (bur tracking). You never get anything else. <b>Build ${Tn(...k.want)}.</b>`,
-    view: [-5, 5, -4.5, 4.5],
-    visual: chainVisual,
-    input: {
-      type: 'order', tiles: [Tn('cam', 'tooth'), Tn('cam', 'tooth', 1), Tn('cam', 'bur'), Tn('cam', 'bur', 1)], answer: k.answer,
-      why: o => o.join() === [...k.answer].reverse().join() ? 'Right two pieces, wrong order. Write out the subscripts (inverting swaps them) and check that the inner pair matches.'
-        : `Write out the subscripts. Inverting swaps them, so ${Tn('cam', 'tooth', 1)} reads tooth,cam. You need the inner pair to match and the outer pair to read ${k.want.join(',')}.`,
-    },
-    explain: `<b>${Tn(...k.want)} = ${k.say}</b>. The camera shows up only as the inner subscripts, and cancels. You used the camera to see both things, then removed it from the answer.`,
-  };
-};
-
-const wobble = v => {
-  const { to, tip, i } = pick(v, [{ to: [4, 1], tip: [6, 1], i: 0 }, { to: [3, 2], tip: [6, 2], i: 0 }, { to: [2, -1], tip: [2, 2], i: 1 }]);
-  const ans = sub(tip, to);
+  const tiles = [['cam', 'tooth'], ['cam', 'tooth', 1], ['cam', 'bur'], ['cam', 'bur', 1]];
+  const F = { tooth: [k.tooth, 0], bur: [k.bur, 90] }, [A, B] = k.want.map(n => F[n]);
   let cam = [0, 0], off = [0, 0], reveal = false;
   const tilt = () => 9 * cam[0] - 6 * cam[1];
+  const project = `${Tn('tooth', 'bur')} = ${Tn('cam', 'tooth', 1)} · ${Tn('cam', 'bur')}`;
   return {
     concept: 'frame-relative',
-    prompt: `Right now the camera sees the tooth origin at <b>${vec(to)}</b> and the bur tip at <b>${vec(tip)}</b>, axes aligned. Hand and tooth hold still, but the elastic mount lets the camera shift and tilt. <b>Drag the camera</b> and watch its readings. After any wobble, <b>what is the tip's ${'xy'[i]}-coordinate in the tooth frame?</b>`,
-    view: [-3, 8, -4, 4],
+    prompt: `Each video frame gives you two poses, both seen from the camera: ${Tn('cam', 'tooth')} and ${Tn('cam', 'bur')}. <b>Drag the camera</b>: both readings change. <b>Build ${Tn(...k.want)}</b>, the pose that does not.`,
+    view: [-3, 8, -3.3, 3.5],
     visual: st => {
       st.draw = () => {
-        st.frame(to, 0, 'tooth', 1.2); st.frame(cam, tilt(), 'camera', 1.2); st.dot(tip, C.acc, 'tip');
-        if (reveal) legs(st, to, 0, tip);
-        st.readout(`camera sees tooth at ${vec(inFrame(to, cam, tilt()))}, tip at ${vec(inFrame(tip, cam, tilt()))}` + (reveal ? `<br><span class="ca">tip in tooth: ${vec(ans)}, always</span>` : ''));
+        st.line(cam, k.tooth, C.ghost, 1.5, [5, 5]); st.line(cam, k.bur, C.ghost, 1.5, [5, 5]);
+        if (reveal) st.arrow(A[0], B[0], C.acc, 2.5);
+        st.frame(k.tooth, 0, 'tooth', 1.1); st.frame(k.bur, 90, 'bur', 1.1); st.frame(cam, tilt(), 'cam', 1.1);
+        st.readout(`<div style="margin-bottom:10px">cam sees tooth at ${vec(inFrame(k.tooth, cam, tilt()))}<br>cam sees bur at ${vec(inFrame(k.bur, cam, tilt()))}`
+          + (reveal ? `<br><span class="ca">${k.want[1]} seen from ${k.want[0]}: ${vec(inFrame(B[0], A[0], A[1]))}, always</span>` : '') + '</div>');
       };
-      st.drag((w, ph) => { if (ph === 'down') off = sub(cam, w); else cam = add(w, off).map((x, j) => Math.max(-2, Math.min(j ? 3 : 2, x))); });
+      st.drag((w, ph) => { if (ph === 'down') off = sub(cam, w); else cam = add(w, off).map((x, j) => Math.max(-2, Math.min(j ? 2 : 2.2, x))); });
     },
     input: {
-      type: 'number', answer: ans[i],
-      why: x => Math.abs(x - tip[i]) < 0.01 ? 'That was the tip in camera coordinates before the wobble. The question is about the tooth frame.'
-        : `Use the first reading, when the axes were aligned: the tip is at ${vec(tip)} and the tooth origin at ${vec(to)} in the same frame. How far is the tip from the tooth origin? Does dragging the camera change that?`,
+      type: 'order', tiles: tiles.map(t => Tn(...t)), answer: k.answer,
+      why: o => chainWhy(o.map(j => tiles[j]), k.want, sameSet(o, k.answer)),
     },
-    explain: `Both camera readings change every time the mount flexes. Their combination ${Tn('cam', 'tooth', 1)} · ${Tn('cam', 'bur')} does not, because the camera cancels. This is why your pipeline never calibrates a camera-to-bur offset: with an elastic mount there is none. Each frame estimates tooth and bur separately, then divides the camera out.`,
+    explain: (k.want[0] === 'tooth' ? `<b>${project}</b>, which reads tooth,cam · cam,bur.` : `<b>${Tn('bur', 'tooth')} = ${Tn('cam', 'bur', 1)} · ${Tn('cam', 'tooth')}</b>, which reads bur,cam · cam,tooth.`)
+      + ` The camera shows up only as the inner subscripts, and cancels. Keep dragging: the yellow arrow never changes.<br><br>This is the core line of your pipeline. The bur pose relative to the tooth is <b>${project}</b>, recomputed from scratch every video frame. The camera is elastic-mounted, so there is never a fixed camera-to-bur offset to calibrate.`,
     after: st => { reveal = true; st.redraw(); },
   };
 };
 
 // ---- problems ----
 
-const P = [{ o: [3, 1], deg: 90, pb: [2, 1] }, { o: [1, 2], deg: -90, pb: [1, 3] }, { o: [4, 0], deg: 90, pb: [3, 2] }, { o: [2, 2], deg: -90, pb: [2, 1] }, { o: [0, 3], deg: 90, pb: [1, 2] }];
-
 const pConvert = v => {
-  const k = pick(v, P), ans = add(q(k.pb, k.deg), k.o), i = v % 2;
+  const k = pick(v, [{ o: [2, 1], deg: 90, pb: [4, 1], i: 0 }, { o: [3, 1], deg: -90, pb: [3, 2], i: 0 }, { o: [1, 3], deg: 90, pb: [3, 2], i: 1 }, { o: [4, 2], deg: -90, pb: [1, 2], i: 1 }, { o: [0, 2], deg: 90, pb: [2, 1], i: 1 }]);
+  const i = k.i, r = q(k.pb, k.deg), ans = add(r, k.o);
   return {
     concept: 'frame-convert',
     prompt: `Frame b has its origin at <b>${vec(k.o)}</b> in frame a and is turned ${turn(k.deg)} relative to a. A point has b-coordinates <b>${vec(k.pb)}</b>. <b>What is its ${'xy'[i]}-coordinate in frame a?</b>`,
-    input: { type: 'number', answer: ans[i] },
-    explain: `p<sub>a</sub> = R·p<sub>b</sub> + t = ${vec(q(k.pb, k.deg))} + ${vec(k.o)} = ${vec(ans)}. Start at b's origin and walk along b's axes.`,
-  };
-};
-
-const pInverse = v => {
-  const k = pick(v + 2, P), pa = add(q(k.pb, k.deg), k.o), i = v % 2;
-  return {
-    concept: 'frame-inverse',
-    prompt: `Frame b has its origin at <b>${vec(k.o)}</b> in frame a and is turned ${turn(k.deg)} relative to a. A point has a-coordinates <b>${vec(pa)}</b>. <b>What is its ${'xy'[i]}-coordinate in frame b?</b>`,
-    input: { type: 'number', answer: k.pb[i] },
-    explain: `p<sub>b</sub> = Rᵀ(p<sub>a</sub> − t) = Rᵀ·${vec(sub(pa, k.o))} = ${vec(k.pb)}. Subtract b's origin, then turn the offset back by b's rotation.`,
+    input: {
+      type: 'number', answer: ans[i],
+      why: x => eq(x, k.pb[i] + k.o[i]) ? `You added b's origin to the b-coordinates without turning them. b's axes are turned, so in frame a the walk ${vec(k.pb)} runs along ${vec(r)}.`
+        : eq(x, r[i]) ? `That is the turned walk R·p<sub>b</sub> = ${vec(r)}, but the walk starts at b's origin, not a's. Add ${vec(k.o)}.`
+        : eq(x, q(k.pb, -k.deg)[i] + k.o[i]) ? `You turned the walk the wrong way. b is turned ${turn(k.deg)}, so its x-arrow points ${way(k.deg, 0)} in frame a.`
+        : eq(x, q(sub(k.pb, k.o), -k.deg)[i]) ? 'That converts the other way, from a-coordinates into b-coordinates. These numbers are already b-coordinates: turn them with R, then add b\'s origin.'
+        : eq(x, ans[1 - i]) ? `You found the right point, ${vec(ans)}, but gave its ${'yx'[i]}-coordinate. The question asks for ${'xy'[i]}.`
+        : `The usual slips are turning the walk the wrong way or leaving out b's origin. Check with a sketch: mark b's origin at ${vec(k.o)}, draw b's x-arrow pointing ${way(k.deg, 0)} and its y-arrow pointing ${way(k.deg, 1)}, then walk ${k.pb[0]} and ${k.pb[1]} along them.`,
+    },
+    explain: `p<sub>a</sub> = R·p<sub>b</sub> + t = ${vec(r)} + ${vec(k.o)} = ${vec(ans)}. Start at b's origin and walk along b's axes.`,
   };
 };
 
@@ -195,27 +217,81 @@ const pChain = v => {
   return {
     concept: 'frame-chain',
     prompt: `T<sub>a,b</sub> converts b-coordinates into a-coordinates. <b>Build ${Tn(...k.want)}</b> from the tiles. Not every tile is needed.`,
-    input: { type: 'order', tiles: k.tiles.map(t => Tn(...t)), answer: k.answer },
+    input: {
+      type: 'order', tiles: k.tiles.map(t => Tn(...t)), answer: k.answer,
+      why: o => chainWhy(o.map(j => k.tiles[j]), k.want, sameSet(o, k.answer)),
+    },
     explain: `${Tn(...k.want)} = ${k.answer.map(j => Tn(...k.tiles[j])).join(' · ')}. Inner subscripts match and cancel; the outer pair is the result.`,
   };
 };
 
+const pDistance = v => {
+  const k = pick(v, [
+    { a: [1, 1], b: [4, 5], from: 'tooth', to: 'camera', deg: 40, t: [7, -2] },
+    { a: [2, 0], b: [8, 8], from: 'scan', to: 'camera', deg: 115, t: [-3, 4] },
+    { a: [0, 2], b: [5, 14], from: 'tooth', to: 'scan', deg: 70, t: [9, 1] },
+    { a: [3, 1], b: [-1, 4], from: 'camera', to: 'tooth', deg: 25, t: [-6, 2] },
+    { a: [-2, 3], b: [6, -3], from: 'scan', to: 'tooth', deg: 160, t: [4, 5] },
+  ]);
+  const d = sub(k.b, k.a).map(Math.abs), ans = Math.hypot(...d);
+  return {
+    concept: 'frame-coords',
+    prompt: `Two marks on the tooth sit at <b>${vec(k.a)}</b> and <b>${vec(k.b)}</b> in ${k.from} coordinates (mm). The ${k.to} frame is turned ${k.deg}° and shifted by ${vec(k.t)} from the ${k.from} frame. <b>How far apart are the marks in ${k.to} coordinates?</b>`,
+    input: {
+      type: 'number', answer: ans, unit: 'mm',
+      why: x => eq(x, d[0] + d[1]) ? `${d[0]} + ${d[1]} is the walk along the two axes. The distance is the straight line across: a ${d[0]}-${d[1]}-${ans} right triangle.`
+        : eq(x, d[0]) || eq(x, d[1]) ? `That is the gap along one axis only. The marks are ${d[0]} apart along one axis and ${d[1]} along the other; the distance is the straight line across.`
+        : `The likely slip is trying to push the ${k.deg}° turn and the shift through the numbers. No conversion is needed: the marks are places, and a new frame only renames them. Check: the gap between them in ${k.from} coordinates is ${d[0]} by ${d[1]}, and that straight-line length is the same from every frame.`,
+    },
+    explain: `A change of frame changes each mark's coordinates, not where the marks are. Frames differ by a turn and a shift, which is rigid (Rotations: lengths and angles survive). So the distance is the same number in every frame: √(${d[0]}² + ${d[1]}²) = <b>${ans} mm</b>.`,
+  };
+};
+
+const pInverse = v => {
+  const k = pick(v, [{ deg: 90, t: [4, 2], pa: [6, 5], i: 0 }, { deg: -90, t: [2, 3], pa: [5, 4], i: 1 }, { deg: 90, t: [3, 4], pa: [7, 1], i: 0 }, { deg: -90, t: [4, 2], pa: [5, 6], i: 1 }, { deg: -90, t: [1, 3], pa: [6, 2], i: 1 }]);
+  const i = k.i, s = sub(k.pa, k.t), ans = q(s, -k.deg);
+  return {
+    concept: 'frame-inverse',
+    prompt: `${Tn('cam', 'tooth')} = (R, t) with R = ${mat(Rm(k.deg))} and t = ${vec(k.t)}. A glint has camera coordinates <b>${vec(k.pa)}</b>. <b>What is its ${'xy'[i]}-coordinate in the tooth frame?</b>`,
+    input: {
+      type: 'number', answer: ans[i],
+      why: x => eq(x, add(q(k.pa, k.deg), k.t)[i]) ? `You applied ${Tn('cam', 'tooth')} itself: R·p + t. It converts tooth → cam, but the glint is already in cam coordinates. You need the inverse, ${Tn('tooth', 'cam')}.`
+        : eq(x, s[i]) ? `You subtracted t and stopped. That offset, ${vec(s)}, is still measured along the camera's axes. Turn it back with Rᵀ.`
+        : eq(x, sub(q(k.pa, -k.deg), k.t)[i]) ? 'You turned p with Rᵀ but subtracted t unturned. The inverse is Rᵀ(p − t) = Rᵀp − Rᵀt: the translation gets turned too.'
+        : eq(x, -ans[i]) ? `Right size, wrong sign: you turned the offset ${vec(s)} with R. Going cam → tooth undoes the tooth's turn, so use Rᵀ.`
+        : eq(x, q(k.pa, -k.deg)[i]) ? `You turned p with Rᵀ but never removed t. Subtract the tooth origin first: p − t = ${vec(s)}.`
+        : eq(x, ans[1 - i]) ? `You found the right point, ${vec(ans)}, but gave its ${'yx'[i]}-coordinate. The question asks for ${'xy'[i]}.`
+        : `The usual slips are applying ${Tn('cam', 'tooth')} forwards, or forgetting that the inverse turns t as well. Check your answer by going forwards: R·p<sub>tooth</sub> + t must give back ${vec(k.pa)}.`,
+    },
+    explain: `${Tn('cam', 'tooth')} converts tooth → cam, so this needs its inverse ${Tn('tooth', 'cam')} = (Rᵀ, −Rᵀt) from Composing transforms: p<sub>tooth</sub> = Rᵀ(p<sub>cam</sub> − t) = Rᵀ·${vec(s)} = ${vec(ans)}. Check: R·${vec(ans)} + t = ${vec(k.pa)}.`,
+  };
+};
+
 const pRelative = v => {
-  const k = pick(v, [{ t1: [4, 2], b1: [6, 3], t2: [1, 0], i: 0 }, { t1: [2, 2], b1: [3, 5], t2: [4, 1], i: 1 }, { t1: [5, 1], b1: [3, 2], t2: [2, 2], i: 0 }, { t1: [1, 4], b1: [4, 2], t2: [3, 3], i: 1 }, { t1: [3, 3], b1: [5, 4], t2: [0, 2], i: 0 }]);
-  const rel = sub(k.b1, k.t1), ans = add(k.t2, rel);
+  const k = pick(v, [{ t1: [3, 1], b1: [5, 5], t2: [1, 0], i: 0 }, { t1: [2, 3], b1: [4, 6], t2: [0, 1], i: 1 }, { t1: [5, 1], b1: [3, 2], t2: [2, 4], i: 0 }, { t1: [2, 5], b1: [5, 4], t2: [1, 3], i: 0 }, { t1: [1, 4], b1: [4, 6], t2: [1, 3], i: 1 }]);
+  const i = k.i, rel = sub(k.b1, k.t1), ans = add(k.t2, rel);
   return {
     concept: 'frame-relative',
-    prompt: `Video frame 1: the camera sees the tooth origin at <b>${vec(k.t1)}</b> and the bur tip at <b>${vec(k.b1)}</b>. Video frame 2: the camera has shifted (no tilt; all axes stay aligned) and sees the tooth origin at <b>${vec(k.t2)}</b>. The bur did not move relative to the tooth. <b>What is the tip's ${'xy'[k.i]}-coordinate in the camera at frame 2?</b>`,
-    input: { type: 'number', answer: ans[k.i] },
-    explain: `The tip in the tooth frame is ${vec(k.b1)} − ${vec(k.t1)} = ${vec(rel)}, and that is the quantity that survives camera motion. At frame 2 the camera sees it at ${vec(k.t2)} + ${vec(rel)} = ${vec(ans)}.`,
+    prompt: `Image 1: the camera sees the tooth origin at <b>${vec(k.t1)}</b> and the bur tip at <b>${vec(k.b1)}</b>. The camera then shifts without turning; bur and tooth hold still. Image 2: the tooth origin is at <b>${vec(k.t2)}</b>. <b>What is the tip's ${'xy'[i]}-coordinate in image 2?</b>`,
+    input: {
+      type: 'number', answer: ans[i],
+      why: x => eq(x, k.b1[i]) ? 'That is the camera\'s reading from image 1. The camera moved, so every camera reading changed, the tip\'s included.'
+        : eq(x, rel[i]) ? `That is the tip in the tooth frame, ${vec(rel)}: the part that does not change. The question asks where the camera sees it in image 2, so add the tooth origin's new reading.`
+        : eq(x, sub(k.t2, rel)[i]) ? `You subtracted the offset. The tip is at tooth + ${vec(rel)}, the same side of the tooth as in image 1.`
+        : eq(x, add(k.b1, sub(k.t1, k.t2))[i]) ? `You shifted the tip the opposite way to the tooth. Both sit still in the mouth, so their camera readings shift together: the tooth reading changed by ${vec(sub(k.t2, k.t1))}, and so does the tip's.`
+        : eq(x, k.t2[i]) ? 'That is the tooth origin in image 2. The tip sits away from the tooth origin by the same offset as in image 1.'
+        : eq(x, ans[1 - i]) ? `You found the right point, ${vec(ans)}, but gave its ${'yx'[i]}-coordinate. The question asks for ${'xy'[i]}.`
+        : `The fixed quantity is tip minus tooth, taken from image 1. Check your answer: your image-2 tip minus the image-2 tooth origin ${vec(k.t2)} must give that same offset.`,
+    },
+    explain: `The tip in the tooth frame is ${vec(k.b1)} − ${vec(k.t1)} = ${vec(rel)}, and that is the quantity that survives camera motion. In image 2 the camera sees it at ${vec(k.t2)} + ${vec(rel)} = ${vec(ans)}. Same idea as ${Tn('tooth', 'bur')} = ${Tn('cam', 'tooth', 1)} · ${Tn('cam', 'bur')}: only tip-relative-to-tooth is worth keeping from each image.`,
   };
 };
 
 Reps.lesson({
   id: 'u1-frames',
   title: 'Changing frames',
-  learn: [sameTip, toCamera, toTooth, chain, relative, wobble],
-  problems: [pConvert, pInverse, pChain, pRelative],
+  learn: [sameTip, toCamera, toTooth, chain, relative],
+  problems: [pConvert, pChain, pDistance, pInverse, pRelative],
 });
 </script>
 </body>
