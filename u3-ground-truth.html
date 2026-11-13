@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<link rel="stylesheet" href="shared/reps.css">
+<script src="shared/reps.js"></script>
+</head>
+<body>
+<script>
+const { C, add, sub, fmt, vec, pick } = Reps;
+const near = (x, y, tol = 0.011) => Math.abs(x - y) <= tol;
+const r6 = x => +x.toFixed(6);                             // keeps float dust out of answer keys
+const Tn = (a, b, inv) => `T<sub>${a},${b}</sub>${inv ? '⁻¹' : ''}`;
+const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+const deg = r => r * 180 / Math.PI;
+const dot = (a, b) => a.reduce((s, x, i) => s + x * b[i], 0);
+const angle = (a, b) => Math.round(deg(Math.acos(clamp(dot(a, b), -1, 1))));
+// summary numbers of a list of per-frame errors
+const stats = e => { const n = e.length, sq = e.reduce((s, x) => s + x * x, 0); return { mean: r6(e.reduce((s, x) => s + x, 0) / n), meanSq: r6(sq / n), rmse: r6(Math.sqrt(sq / n)), max: Math.max(...e) }; };
+const CX = 320, CY = 240;                                  // principal point, px
+const project = (f, [X, Y, Z]) => [f * X / Z + CX, f * Y / Z + CY];
+
+// ---- learn ----
+
+const crown = [[-2, 0.4], [-2.1, 1.6], [-1.7, 2.3], [-0.9, 2.4], [-0.3, 2.1], [0.4, 2.4], [1.3, 2.4], [2, 2], [2.1, 1.1], [1.9, 0.4]];
+
+const known = v => {
+  const k = pick(v, [
+    { ask: 'In which clip can you measure how far off the tracker is?', opts: [
+      { html: 'Only the real clip', why: 'The real clip is where the tracker has to work in the end, but nothing in it records where the tip truly was. The video is the only measurement you have, so there is nothing to compare against.' },
+      { html: 'Only the render', correct: true },
+      { html: 'Both', why: 'For the real clip, what would you compare the tracker against? Nothing recorded the bur\'s true pose. Only the render was made from poses you typed.' },
+      { html: 'Neither', why: 'The render needs no second sensor. You typed the tooth pose and the bur pose for every frame before any image existed, so the true tip is known exactly.' }] },
+    { ask: 'For which clip is the tracker\'s error impossible to compute?', opts: [
+      { html: 'Only the render', why: 'The render is the one clip where you can: it was drawn from poses you typed, so the true tip of every frame is sitting in your pose list.' },
+      { html: 'Neither', why: 'The real clip has no record of where the bur truly was. The tracker\'s answer is the only answer there is, so there is nothing to subtract it from.' },
+      { html: 'Only the real clip', correct: true },
+      { html: 'Both', why: 'A render is drawn from poses you chose. Those poses are the truth for that clip, exact and already on disk.' }] },
+  ]);
+  const N = 20;
+  let f = 6, shown = false;
+  const est = (cx, s) => [cx - 1.5 + 3 * s, 2.75 + 0.35 * Math.sin(Math.PI * s)];
+  const gap = s => [-0.28 + 0.1 * Math.cos(5 * s), 0.06 + 0.16 * Math.sin(7 * s)];
+  return {
+    concept: 'gt-known-pose',
+    prompt: `Your tracker marks the bur tip (yellow) in two clips: a real typodont video, and one you rendered from poses you typed in. <b>Drag to scrub through the frames.</b> ${k.ask}`,
+    view: [0, 12, -0.7, 6.1],
+    visual: st => {
+      st.draw = () => {
+        const s = f / N;
+        st.line([6, -0.5], [6, 5.9], C.line, 1);
+        [[3, 'real clip', 'truth: unknown'], [9, 'render', 'truth: your pose list']].forEach(([cx, name, cap], i) => {
+          st.poly(crown.map(p => add(p, [cx, 0])), C.ghost, 'rgba(255,255,255,.06)');
+          const e = est(cx, s);
+          st.line(e, add(e, [0.8, 2]), C.fg, 6);
+          st.label([cx, 5.6], name, C.fg);
+          if (shown) {
+            st.label([cx, -0.15], cap, i ? C.fg : C.dim);
+            if (i) { const t = add(e, gap(s)); st.line(e, t, C.fg, 1.5); st.ring(t, C.fg, 7); }
+          }
+          st.dot(e, C.acc, null, 5);
+        });
+        st.readout(`frame ${f + 1}/${N + 1}` + (shown ? ` · render ${fmt(Math.hypot(...gap(s)))} mm off · real ?` : ''));
+      };
+      st.drag(w => { f = clamp(Math.round(w[0] / 12 * N), 0, N); });
+    },
+    input: { type: 'choice', cols: 2, options: k.opts },
+    explain: `A render is drawn from poses you chose: ${Tn('cam', 'tooth')} and ${Tn('cam', 'bur')} for every frame. So the true ${Tn('tooth', 'bur')} = ${Tn('cam', 'tooth', 1)} · ${Tn('cam', 'bur')} is known exactly, at no cost. That is <b>ground truth</b> (white ring). A real clip gives you no such thing. Keep scrubbing: the render's error is there on every frame; for the real clip that number does not exist.`,
+    after: st => { shown = true; st.redraw(); },
+  };
+};
+
+const tipErr = v => {
+  const { T, d } = pick(v, [{ T: [2, 1], d: [3, 4] }, { T: [0, 1], d: [8, 6] }, { T: [6, 1], d: [-3, 4] }]);
+  const E = add(T, d), a = Math.abs(d[0]) / 10, b = Math.abs(d[1]) / 10, ans = r6(Math.hypot(a, b));
+  let t = 0;
+  return {
+    concept: 'gt-tip-error',
+    prompt: `One rendered frame, zoomed in on the tooth frame: <b>1 square = 0.1 mm</b>. White is the tip from the pose you typed. Yellow is the tip your tracker reports. <b>How far apart are they, in mm?</b>`,
+    view: [-1, 9, -1, 9],
+    visual: st => {
+      st.draw = () => {
+        st.grid(false);
+        st.label([-0.8, 8.5], 'tooth frame · 1 square = 0.1 mm', C.dim, [1, 0]);
+        if (t) {
+          const m = [E[0], T[1]], u = Math.min(1, t * 2), w = Math.max(0, t * 2 - 1);
+          st.line(T, add(T, [d[0] * u, 0]), C.x, 2, [4, 4]); st.line(m, add(m, [0, d[1] * w]), C.y, 2, [4, 4]);
+          if (t === 1) {
+            st.line(T, E, C.acc, 2.5);
+            st.label([(T[0] + E[0]) / 2, T[1]], fmt(a), C.x, [0, 14]); st.label([E[0], (T[1] + E[1]) / 2], fmt(b), C.y, [d[0] > 0 ? 12 : -12, 0]);
+            st.label([(T[0] + E[0]) / 2, (T[1] + E[1]) / 2], fmt(ans) + ' mm', C.acc, [d[0] > 0 ? -12 : 12, -8]);
+          }
+        }
+        st.dot(T, C.fg); st.label(T, 'typed', C.fg, d[0] < 0 ? [12, -12] : T[0] < 1 ? [12, 16] : [-12, -12]);
+        st.dot(E, C.acc); st.label(E, 'tracker', C.acc, E[0] > 5 ? [-12, -14] : [12, -14]);
+      };
+    },
+    input: {
+      type: 'number', answer: ans, unit: 'mm',
+      why: x => near(x, a + b) ? `${fmt(a)} + ${fmt(b)} is the walk along the two axes. Tip error is the straight line between the two dots.`
+        : near(x, a) || near(x, b) ? `That is the gap along one axis only. Both count: combine ${fmt(a)} and ${fmt(b)} with Pythagoras.`
+        : near(x, ans * 10) ? 'That is the distance in squares. One square is 0.1 mm.'
+        : near(x, (a + b) * 10) || near(x, a * 10) || near(x, b * 10) ? 'Two things: one square is 0.1 mm, and the error is the straight line between the dots, not a count of squares along the axes.'
+        : `Count the squares between the dots: ${Math.abs(d[0])} across and ${Math.abs(d[1])} up, so ${fmt(a)} mm and ${fmt(b)} mm. The error is the straight-line distance, √(${fmt(a)}² + ${fmt(b)}²).`,
+    },
+    explain: `<b>Tip error</b> is the straight-line distance between the estimated and the true tip: √(${fmt(a)}² + ${fmt(b)}²) = ${fmt(ans)} mm. One number per frame, in mm, with both tips expressed in the <b>tooth frame</b>. That is the frame the robot data will be in, and the tracker's tip only gets there through both of its estimates, ${Tn('cam', 'tooth', 1)} · ${Tn('cam', 'bur')}, so this one number grades the tooth registration and the bur tracking together.`,
+    after: st => st.animate(1100, x => { t = x; }),
+  };
+};
+
+const axisErr = v => {
+  const th0 = pick(v, [60, -90, -30]), ans = Math.abs(th0);
+  const dir = th => [Math.sin(Reps.rad(th)), Math.cos(Reps.rad(th))];
+  const e = dir(th0).map(x => +x.toFixed(2)), d = e[1], L = 4;
+  let th = th0, arc = 0, free = false;
+  return {
+    concept: 'gt-axis-error',
+    prompt: `This tracker puts the tip exactly right: tip error 0 mm. But its shank leans. True direction <b>a = (0, 1)</b>, tracker's <b>â = ${vec(e)}</b>, both unit length, so a·â = cos θ. <b>What is the angle θ between them, in degrees?</b>`,
+    view: [-6, 6, -1.5, 5.5],
+    visual: st => {
+      st.draw = () => {
+        const p = dir(th).map(x => x * L);
+        st.poly([[-6, -0.12], [6, -0.12], [6, -1.5], [-6, -1.5]], null, 'rgba(255,255,255,.07)'); st.label([-5.6, -0.85], 'tooth', C.dim, [1, 0]);
+        st.line([0, 0], [0, L], C.ghost, 9); st.label([0, L + 0.55], 'true a', C.fg);
+        st.line([0, 0], p, C.acc, 5); st.label(add(p, [0, 0.55]), 'tracker â', C.acc);
+        if (arc) {
+          const n = 24, pt = i => dir(th * arc * i / n).map(x => x * 1.6);
+          for (let i = 0; i < n; i++) st.line(pt(i), pt(i + 1), C.fg, 2);
+          if (arc === 1 && Math.abs(th) > 12) st.label(dir(th / 2).map(x => x * 2.35), Math.round(Math.abs(th)) + '°', C.fg);
+        }
+        st.dot([0, 0], C.fg, null, 5);
+        st.readout(free ? `tip error 0 mm · axis error ${Math.round(Math.abs(th))}°` : '');
+      };
+      st.drag(w => { if (free && Math.hypot(...w) > 0.3) th = deg(Math.atan2(w[0], w[1])); });
+    },
+    input: {
+      type: 'number', answer: ans, unit: '°', tol: 0.6,
+      why: x => near(x, d, 0.02) && ans !== 90 ? `That is the dot product, which is cos θ. The axis error is the angle itself: which angle has cosine ${fmt(d)}?`
+        : near(x, 0) ? '0 is the tip error. Axis error is a separate number: the angle between the two shank directions, and these two are clearly not parallel.'
+        : near(x, 90 - ans) && ans !== 90 ? `That is the angle whose sine is ${fmt(d)}. For the cosine: cos 30° = 0.87, cos 60° = 0.5.`
+        : `Multiply matching components and add: a·â = 0·${fmt(e[0])} + 1·${fmt(e[1])} = ${fmt(d)}. That is cos θ. Recall cos 0° = 1, cos 30° = 0.87, cos 60° = 0.5, cos 90° = 0.`,
+    },
+    explain: `a·â = ${fmt(d)} and arccos(${fmt(d)}) = ${ans}°. <b>Axis error</b> is the angle between the estimated and the true shank direction. It is separate from tip error: this estimate scores 0 mm and ${ans}°, the right spot at the wrong tilt. Drag the yellow shank: tip error stays 0 whatever the axis error does.`,
+    after: st => { free = true; st.animate(900, x => { arc = x; }); },
+  };
+};
+
+const projCheck = v => {
+  const f = 800, k = pick(v, [
+    { P: [2, 3, 40], R: [360, 180], end: [560, 50], kOff: [15, 0], rOff: [-15, 0], gOff: [12, 0],
+      diag: 'The render\'s tip is mirrored top to bottom about the principal point: the renderer treats camera y as up, and your camera frame has y down.' },
+    { P: [4, -3, 40], R: [480, 120], end: [620, 30], kOff: [-15, 0], rOff: [-12, -17], gOff: [14, 12],
+      diag: 'The render\'s tip is twice as far from the principal point: the renderer was given a focal length (or field of view) twice what your K says.' },
+    { P: [4, 2, 40], R: [240, 280], end: [70, 120], kOff: [15, 0], rOff: [0, 19], gOff: [0, -14],
+      diag: 'The render\'s tip is mirrored left to right about the principal point: the renderer\'s camera x axis points the other way from yours.' },
+  ]);
+  const K = project(f, k.P), g = Math.round(Math.hypot(...sub(k.R, K)));
+  const im = ([u, w]) => [u, -w];
+  const opts = [
+    { html: 'The renderer\'s conventions are off', correct: true },
+    { html: `The tracker is ${g} px off here`, why: 'No tracker has run. Both marks come from the same typed pose: one through your K, one through the renderer. The gap is between the renderer and your camera model.' },
+    { html: 'The pose you typed was wrong', why: 'A typed pose cannot be wrong: it is the input, the definition of this frame. The two marks disagree about how to draw that same pose.' },
+    { html: 'Nothing. The truth is still exact', why: `The pose is exact, but the image no longer shows it. A perfect tracker reading this render would be scored ${g} px wrong against your pose, and every error you measured afterwards would carry that gap.` },
+  ];
+  let t = 0;
+  return {
+    concept: 'gt-project-check',
+    prompt: `No tracker has run yet. You typed the tip at <b>${vec(k.P)} mm</b> in the camera. Your K projects it to the ring; the render draws it at the yellow dot. <b>What does the gap tell you?</b>`,
+    view: [-80, 720, -492, 12],
+    visual: st => {
+      st.draw = () => {
+        st.poly([[0, 0], [640, 0], [640, 480], [0, 480]].map(im), C.line, '#0b0d11');
+        st.line(im([CX - 12, CY]), im([CX + 12, CY]), C.ghost, 1); st.line(im([CX, CY - 12]), im([CX, CY + 12]), C.ghost, 1);
+        st.line(im(k.R), im(k.end), C.ghost, 12);
+        if (t) { st.line(im(K), im(add(K, sub(k.R, K).map(x => x * t))), C.acc, 2, [5, 4]); if (t === 1) st.label(im([(K[0] + k.R[0]) / 2, (K[1] + k.R[1]) / 2]), g + ' px', C.acc, k.gOff); }
+        st.ring(im(K), C.fg, 10); st.label(im(K), `K: ${vec(K)}`, C.fg, k.kOff);
+        st.dot(im(k.R), C.acc, null, 5); st.label(im(k.R), `render: ${vec(k.R)}`, C.acc, k.rOff);
+      };
+    },
+    input: { type: 'choice', options: [0, 1, 2, 3].map(i => opts[(i + 3 * v + 1) % 4]) },
+    explain: `Your K gives u = ${f}·${k.P[0]}/${k.P[2]} + ${CX} = ${K[0]} and v = ${f}·${k.P[1] < 0 ? `(${k.P[1]})` : k.P[1]}/${k.P[2]} + ${CY} = ${K[1]}. The render disagrees by ${g} px. ${k.diag} The check: <b>project the known tip with K and compare it with the render.</b> More than about a pixel apart means the renderer or one of its conventions is wrong, not the tracker. Fix that before you measure anything on these images.`,
+    after: st => st.animate(900, x => { t = x; }),
+  };
+};
+
+const summary = v => {
+  const { A, B } = pick(v, [{ A: 2, B: [0, 0, 0, 8] }, { A: 4, B: [1, 1, 7, 7] }, { A: 3, B: [0, 0, 0, 12] }]);   // tenths of a mm
+  const top = Math.max(...B), sB = stats(B), ans = sB.rmse / 10, mm = x => fmt(x / 10);
+  const sqs = B.map(x => fmt(x * x / 100));
+  let last = B[3], shown = false;
+  return {
+    concept: 'gt-summary',
+    prompt: `Per-frame tip errors (mm) of two trackers on the same four rendered frames. Both have a <b>mean of ${mm(A)} mm</b>, and A's RMSE is ${mm(A)} too. <b>What is B's RMSE?</b> (Square each error, average, take the root.)`,
+    view: [0, 12, -1.5, 6.3],
+    visual: st => {
+      const Y = x => x * 5 / top;
+      const bar = (x, val, col) => {
+        const [x0, y0] = st.px([x, Y(val)]), [x1, y1] = st.px([x + 0.8, 0]), g = st.g;
+        if (val) { g.beginPath(); g.fillStyle = col; g.roundRect(x0, y0, x1 - x0, y1 - y0, [4, 4, 0, 0]); g.fill(); }
+        st.label([x + 0.4, Y(val)], mm(val), C.fg, [0, -11]);
+      };
+      st.draw = () => {
+        const b = [...B.slice(0, 3), last], s = stats(b);
+        [0.6, 6.6].forEach(x => st.line([x, 0], [x + 4.9, 0], C.ghost, 1.5));
+        for (let i = 0; i < 4; i++) {
+          bar(1 + i * 1.1, A, C.ghost); bar(7 + i * 1.1, b[i], C.acc);
+          st.label([1.4 + i * 1.1, -0.4], String(i + 1), C.dim); st.label([7.4 + i * 1.1, -0.4], String(i + 1), C.dim);
+        }
+        st.label([3.05, -1.05], 'tracker A', C.fg); st.label([9.05, -1.05], 'tracker B', C.fg);
+        if (shown) {
+          st.line([6.6, Y(s.mean)], [11.5, Y(s.mean)], C.fg, 1.5, [3, 4]); st.line([6.6, Y(s.rmse)], [11.5, Y(s.rmse)], C.fg, 1.5, [8, 4]);
+          if (s.rmse - s.mean > 0.12 * top) st.label([6.6, Y(s.mean)], 'mean', C.fg, [1, -10]);
+          st.label([6.6, Y(s.rmse)], s.rmse - s.mean > 0.12 * top ? 'RMSE' : 'mean = RMSE', C.fg, [1, -10]);
+          st.readout(`A: mean ${mm(A)} · RMSE ${mm(A)} · max ${mm(A)}<br><span class="ca">B: mean ${mm(s.mean)} · RMSE ${mm(s.rmse)} · max ${mm(s.max)}</span>`);
+        }
+      };
+      st.drag(w => { if (shown) last = clamp(Math.round(w[1] / 5 * top), 0, top); });
+    },
+    input: {
+      type: 'number', answer: ans, unit: 'mm',
+      why: x => near(x, sB.meanSq / 100) ? `That is the mean of the squares, (${sqs.join(' + ')})/4. Take its square root.`
+        : near(x, sB.mean / 10) ? `That is the mean. The RMSE squares each error before averaging, so the ${mm(top)} frame goes in as ${fmt(top * top / 100)}, not ${mm(top)}.`
+        : near(x, sB.max / 10) ? 'That is the max, the single worst frame. The RMSE is the root of the mean of the squares: divide the sum of squares by the 4 frames before taking the root.'
+        : near(x, Math.sqrt(sB.meanSq * 4) / 10) ? 'You took the root of the sum of squares. Divide by the 4 frames first: root of the <i>mean</i> square.'
+        : `Square each error: ${sqs.join(', ')}. Average them: ${fmt(sB.meanSq / 100)}. Then take the square root.`,
+    },
+    explain: `B's RMSE is √((${sqs.join(' + ')})/4) = √${fmt(sB.meanSq / 100)} = <b>${fmt(ans)} mm</b>, against ${mm(A)} for A, though the means match. <b>Mean</b>: the typical frame. <b>RMSE</b>: squares first, so an occasional bad frame counts extra. <b>Max</b>: the worst frame, ${mm(top)} mm here. A robot trained on B's trajectory copies that frame too, and the mean hides it. Drag up and down on the chart to change B's last frame.`,
+    after: st => { shown = true; st.redraw(); },
+  };
+};
+
+// ---- problems ----
+
+const pAxis = v => {
+  const k = pick(v, [
+    { d: 0, a: [0, 0, 1], e: [0, 0.87, 0.5], note: 'Tip perfect, shank tilted by 60°: good on one number, bad on the other.' },
+    { d: 2, a: [0.6, 0, 0.8], e: [0.6, 0, 0.8], note: 'Tip error 2 mm, axis error 0°: the shank is parallel to the truth but in the wrong place. The two numbers are separate, so report both.' },
+    { d: 0.1, a: [0.6, 0.8, 0], e: [-0.8, 0.6, 0], note: 'The tip is within 0.1 mm and the shank is at right angles to the truth. A small tip error says nothing about the axis.' },
+    { d: 0, a: [0, 1, 0], e: [0, -1, 0], note: 'Parallel but pointing opposite ways. With a perfect tip that usually means a convention mismatch: one side points the axis from tip to shank, the other from shank to tip.' },
+    { d: 0.5, a: [1, 0, 0], e: [0.5, 0, 0.87], note: 'The 0.5 mm tip error plays no part: axis error only compares directions.' },
+  ]);
+  const c = dot(k.a, k.e), ans = angle(k.a, k.e);
+  const terms = k.a.map((x, i) => `${fmt(x)}·${k.e[i] < 0 ? `(${fmt(k.e[i])})` : fmt(k.e[i])}`).join(' + ');
+  return {
+    concept: 'gt-axis-error',
+    prompt: `One rendered frame. The tracker's tip is <b>${fmt(k.d)} mm</b> from the true tip. True shank direction <b>a = ${vec(k.a)}</b>, estimated <b>â = ${vec(k.e)}</b>, both unit length. <b>What is the axis error, in degrees?</b>`,
+    input: {
+      type: 'number', answer: ans, unit: '°', tol: 0.6,
+      why: x => ans === 180 && near(x, 0) ? 'The two directions lie on the same line but point opposite ways: a·â = −1, not +1.'
+        : near(x, k.d) && k.d !== ans ? `${fmt(k.d)} is the tip error, a distance in mm. Axis error ignores position: it is the angle between the two directions.`
+        : near(x, c, 0.02) && !near(c, ans) ? 'That is the dot product a·â, which is the cosine of the angle. The axis error is the angle itself.'
+        : near(x, 90 - ans) && ans % 90 ? 'That is the angle whose sine equals the dot product. The dot product of unit vectors is the cosine.'
+        : 'Axis error is the angle between the two directions. For unit vectors the dot product is its cosine, so take a·â and ask which angle has that cosine.',
+    },
+    explain: `a·â = ${terms} = ${fmt(c)}, and arccos(${fmt(c)}) = <b>${ans}°</b>. ${k.note}`,
+  };
+};
+
+const pProject = v => {
+  const k = pick(v, [
+    { f: 800, P: [2, -1, 40], R: [363, 224] }, { f: 600, P: [4, 2, 60], R: [360, 260] }, { f: 400, P: [-3, 1, 20], R: [256, 263] },
+    { f: 800, P: [1, 2, 20], R: [366, 312] }, { f: 800, P: [2, 3, 40], R: [360, 180] },
+  ]);
+  const K = project(k.f, k.P), off = sub(k.R, K), ans = r6(Math.hypot(...off));
+  const noC = Math.hypot(...sub(k.R, sub(K, [CX, CY]))), flip = Math.hypot(...sub(k.R, [K[0], 2 * CY - K[1]])), walk = Math.abs(off[0]) + Math.abs(off[1]);
+  const par = x => x < 0 ? `(${x})` : x, work = `u = ${k.f}·${par(k.P[0])}/${k.P[2]} + ${CX} = ${K[0]}, v = ${k.f}·${par(k.P[1])}/${k.P[2]} + ${CY} = ${K[1]}`;
+  const verdict = ans === 0 ? 'Zero gap: on this frame the renderer agrees with your camera model. Repeat it over many frames and keep the largest gap; that maximum is the number you log for this unit.'
+    : ans > 50 ? 'That is far more than a pixel, and the rendered tip is the projected one mirrored top to bottom about the principal point: the renderer has camera y pointing up. The renderer is wrong, not any tracker.'
+    : 'More than about a pixel: the renderer or one of its conventions is wrong, and no tracker has even run. Fix it before measuring anything on these renders.';
+  return {
+    concept: 'gt-project-check',
+    prompt: `A render check. f = <b>${k.f} px</b>, principal point <b>(${CX}, ${CY})</b>. You typed the bur tip at <b>${vec(k.P)} mm</b> in the camera. In the rendered image the tip is at pixel <b>${vec(k.R)}</b>. <b>How many px is that from where K projects the tip?</b>`,
+    input: {
+      type: 'number', answer: ans, unit: 'px', tol: 0.05,
+      why: x => near(x, flip, 0.05) ? `You flipped the sign of v. Camera y points down and so does v, so v = f·Y/Z + c<sub>y</sub> with no sign change: ${work}.`
+        : near(x, noC, 0.6) ? `You left out the principal point. f·X/Z is measured from the image centre; pixels count from the top-left corner: ${work}.`
+        : near(x, walk, 0.05) ? `${Math.abs(off[0])} + ${Math.abs(off[1])} is the walk along u and then v. The gap is the straight-line pixel distance.`
+        : 'Two steps: project the typed tip with the pinhole model (f·X/Z + c<sub>x</sub>, f·Y/Z + c<sub>y</sub>), then take the straight-line pixel distance to the rendered tip.',
+    },
+    explain: `Projected tip: ${work}. Rendered tip: ${vec(k.R)}. They differ by ${vec(off)}, a gap of <b>${fmt(ans)} px</b>. ${verdict}`,
+  };
+};
+
+const pKnown = v => {
+  const k = pick(v, [
+    { ask: `You want to grade a tracker against the true ${Tn('tooth', 'bur')} of every frame. <b>Which clip comes with that truth?</b>`, opts: [
+      { html: 'A typodont video shot on a sharper 4K camera', why: 'Sharper pixels are still only pixels. Nothing in the recording says where the bur was.' },
+      { html: 'A typodont video that last month\'s tracker already processed', why: 'That output is another estimate with its own unknown error. Two estimates can disagree without either being the truth.' },
+      { html: 'A render made from a pose list you saved', correct: true },
+      { html: 'A real clip from a camera calibrated to 0.1 px RMS', why: 'A good calibration says K fits the lens. It says nothing about where the bur and tooth were in any frame.' }] },
+    { ask: `A colleague sends 500 rendered frames, but the file of poses they were rendered from is lost. <b>What have you lost?</b>`, opts: [
+      { html: 'The ground truth: these are now just images', correct: true },
+      { html: 'Nothing: the poses can be read back off the images', why: 'Reading a pose back off an image is exactly the tracker\'s job, and its answer is an estimate. The truth was the list that went in.' },
+      { html: 'Only the camera matrix K', why: 'K is a separate input. What is gone is the bur and tooth pose of every frame, which is what a tracker is graded against.' },
+      { html: 'Only the tip errors, not the axis errors', why: 'Both errors compare an estimate with the true pose. Without the pose list neither can be computed.' }] },
+    { ask: `You film a real typodont clip, then render a look-alike by typing poses that seem about right. <b>For which clip do you now know the true ${Tn('tooth', 'bur')}?</b>`, opts: [
+      { html: 'Both: the typed poses describe both clips', why: 'The typed poses are your guess for the real clip, with unknown error. They are exact only for the images drawn from them.' },
+      { html: 'Only the real clip', why: 'Nothing recorded the bur\'s pose in the real clip. Typing a look-alike does not measure it.' },
+      { html: 'Neither: the typed poses were only approximate', why: 'Approximate as a copy of the real clip, yes. But the render was drawn from exactly those poses, so for the render they are exact.' },
+      { html: 'Only the render', correct: true }] },
+    { ask: `<b>Why is ground truth in a render "free"?</b>`, opts: [
+      { html: 'The renderer measures the pose precisely from its image', why: 'Nothing is measured. Poses go into a renderer and an image comes out; the pose is never recovered from the image.' },
+      { html: 'The poses were inputs: you chose them before any image existed', correct: true },
+      { html: 'Rendered images have no noise, so the tracker is exact on them', why: 'A tracker still estimates on clean images and still makes errors. Ground truth is what lets you see those errors.' },
+      { html: 'A rendered bur tip is easier to see than a real one', why: 'Being easy to see helps the tracker, but seeing is still estimating. The truth comes from the pose list, not from the picture.' }] },
+  ]);
+  return {
+    concept: 'gt-known-pose',
+    prompt: k.ask,
+    input: { type: 'choice', options: k.opts },
+    explain: `Ground truth is the pose list a render was drawn from: ${Tn('cam', 'tooth')} and ${Tn('cam', 'bur')} per frame, giving the exact ${Tn('tooth', 'bur')}. It is exact for those images and for nothing else. Anything recovered from pixels, however sharp, is an estimate.`,
+  };
+};
+
+const pTip = v => {
+  // camera-frame positions in tenths of a mm: typed tooth origin t and tip p, tracker's th and ph
+  const k = pick(v, [
+    { t: [40, 20], p: [70, 60], th: [43, 24], ph: [70, 60], note: 'The bur was found perfectly in the camera, yet its tip is off on the tooth: all of the error came from the tooth registration.' },
+    { t: [50, 10], p: [80, 30], th: [50, 10], ph: [86, 38], note: 'Here the tooth registration was perfect and the whole error came from the bur.' },
+    { t: [30, 30], p: [60, 50], th: [33, 34], ph: [63, 54], note: 'Both camera-frame estimates carry the same shift, and it cancels: the tip is exactly right on the tooth, though comparing tips in the camera frame would have charged 0.5 mm.' },
+    { t: [20, 40], p: [60, 70], th: [23, 40], ph: [60, 74], note: 'The tooth estimate is 0.3 mm off and the bur estimate 0.4 mm off in the camera; on the tooth they combine.' },
+    { t: [60, 20], p: [90, 60], th: [54, 20], ph: [90, 68], note: 'The tooth estimate is 0.6 mm off and the bur estimate 0.8 mm off in the camera; on the tooth they combine.' },
+  ]);
+  const mm = q => vec(q.map(x => x / 10)), relT = sub(k.p, k.t), relE = sub(k.ph, k.th), d = sub(relE, relT);
+  const ans = r6(Math.hypot(...d) / 10), cam = r6(Math.hypot(...sub(k.ph, k.p)) / 10), walk = (Math.abs(d[0]) + Math.abs(d[1])) / 10;
+  return {
+    concept: 'gt-tip-error',
+    prompt: `One rendered frame. Camera coordinates in mm, axes aligned, everything at one depth.<br>Typed: tooth origin <b>${mm(k.t)}</b>, tip <b>${mm(k.p)}</b>.<br>Tracker: tooth origin <b>${mm(k.th)}</b>, tip <b>${mm(k.ph)}</b>.<br><b>What is the tip error in the tooth frame, in mm?</b>`,
+    input: {
+      type: 'number', answer: ans, unit: 'mm',
+      why: x => near(x, cam) && !near(cam, ans) ? `${fmt(cam)} mm is the gap between the two tips in the camera frame, which looks only at the bur estimate. The tracker's tooth origin matters too: convert each tip into the tooth frame (tip minus tooth origin) and compare there.`
+        : near(x, walk) && !near(walk, ans) ? 'That adds the x gap and the y gap. Tip error is the straight-line distance.'
+        : 'Compare the tips in the tooth frame, not the camera frame: subtract each tooth origin from its own tip first (the axes are aligned), then take the straight-line distance between the two results.',
+    },
+    explain: `In the tooth frame the typed tip is ${mm(k.p)} − ${mm(k.t)} = ${mm(relT)}, and the tracker's is ${mm(k.ph)} − ${mm(k.th)} = ${mm(relE)}. They differ by ${mm(d)}: tip error <b>${fmt(ans)} mm</b>. ${k.note} Errors are graded in the tooth frame because the robot data is ${Tn('tooth', 'bur')}: both estimates count, and the elastic camera's own motion is not in it.`,
+  };
+};
+
+const pSummary = v => {
+  const num = (list, unit, lead, tail) => {
+    const s = stats(list), sqs = list.map(x => fmt(x * x));
+    return {
+      prompt: `${lead} <b>What is the RMSE, in ${unit === '°' ? 'degrees' : unit}?</b>`,
+      input: {
+        type: 'number', answer: s.rmse, unit,
+        why: x => near(x, s.meanSq) && !near(s.meanSq, s.rmse) ? 'That is the mean of the squared errors. Take its square root.'
+          : near(x, s.mean) && !near(s.mean, s.rmse) ? 'That is the mean. The RMSE squares each error first, so the larger errors weigh more.'
+          : near(x, s.max) && !near(s.max, s.rmse) ? 'That is the max, the single worst frame. The RMSE is the root of the mean of the squares.'
+          : near(x, Math.sqrt(s.meanSq * list.length)) ? 'You took the root of the sum of squares. Divide by the number of frames first: root of the <i>mean</i> square.'
+          : 'RMSE is root-mean-square, read right to left: square each error, take the mean of the squares, then the root.',
+      },
+      explain: `Squares: ${sqs.length > 4 ? sqs[0] + ' on every frame' : sqs.join(', ')}. Their mean is ${fmt(s.meanSq)}, and √${fmt(s.meanSq)} = <b>${fmt(s.rmse)}${unit === '°' ? '°' : ' ' + unit}</b>. ${tail(s)}`,
+    };
+  };
+  const k = pick(v, [
+    num([0.1, 0.1, 0.7, 0.7], 'mm', 'Tip errors on four rendered frames: <b>0.1, 0.1, 0.7 and 0.7 mm</b>.', s => `The mean is ${fmt(s.mean)} mm and the max ${fmt(s.max)} mm: RMSE sits between them, pulled toward the bad frames.`),
+    { prompt: 'A robot will replay the recovered trajectory, and any single frame more than 0.5 mm off could gouge the tooth. <b>Which summary of the per-frame tip errors do you compare with 0.5 mm?</b>',
+      input: { type: 'choice', cols: 2, options: [
+        { html: 'Mean', why: 'A mean of 0.2 mm can hide one frame at 0.8 mm among frames near zero. The mean describes the typical frame, not the worst one.' },
+        { html: 'RMSE', why: 'RMSE leans toward bad frames but still averages. One frame in a thousand can be far over the limit while the RMSE stays small.' },
+        { html: 'Max', correct: true },
+        { html: 'Any: they agree', why: 'They agree only when every frame has the same error. One bad frame pulls them apart: max most, RMSE some, mean least.' }] },
+      explain: 'A limit on every single frame is a limit on the <b>max</b>. Mean answers "how good is a typical frame", RMSE the same with bad frames weighted up, max "how bad does it ever get".' },
+    num([1, 7], '°', 'A different error, same summaries. Axis errors on two rendered frames: <b>1° and 7°</b>.', s => `Mean ${fmt(s.mean)}°, RMSE ${fmt(s.rmse)}°, max ${fmt(s.max)}°. The summaries work on any per-frame error, whatever its unit.`),
+    num(Array(50).fill(0.3), 'mm', 'A tracker is off by exactly <b>0.3 mm on every one of 50</b> rendered frames.', () => 'When every frame has the same error, mean, RMSE and max all equal it. They separate only when the errors are uneven, and the size of the gap tells you how uneven.'),
+    num([0.2, 1.4], 'mm', 'Tip errors on two rendered frames: <b>0.2 and 1.4 mm</b>.', s => `The mean is ${fmt(s.mean)} mm and the max ${fmt(s.max)} mm: RMSE sits between them, pulled toward the bad frame.`),
+  ]);
+  return { concept: 'gt-summary', ...k };
+};
+
+Reps.lesson({
+  id: 'u3-ground-truth',
+  title: 'Ground truth for free',
+  learn: [known, tipErr, axisErr, projCheck, summary],
+  problems: [pAxis, pProject, pKnown, pTip, pSummary],
+});
+</script>
+</body>
+</html>

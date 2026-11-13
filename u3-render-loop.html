@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<link rel="stylesheet" href="shared/reps.css">
+<script src="shared/reps.js"></script>
+</head>
+<body>
+<script>
+const { C, add, sub, fmt, pick } = Reps;
+
+// Scene screens are a slice through the optical axis, as in Unit 2: stage points are [Z, X] in mm, Z (forward) to the
+// right, X up, pinhole at the origin. The image row is drawn as a far screen at Z = ZS, scaled so that the ray from the
+// pinhole through any point lands on that point's own pixel.
+const F = 800, W = 640, CX = 320, CY = 240, D = 1.6, R = D / 2, ZS = 20;
+const VIEW = [-3, 22.2, -9.3, 9.3];
+const r6 = n => Math.round(n * 1e6) / 1e6;
+const U = (x, z) => r6(CX + F * x / z);                       // pixel column of the camera-frame point (X, Z)
+const sx = u => (u - CX) * ZS / F;                            // pixel column -> height on the far screen
+const num = n => (n < 0 ? '−' : '') + fmt(Math.abs(n));       // a real minus sign
+const vec = p => '(' + p.map(num).join(', ') + ')';
+const Tn = (a, b) => `T<sub>${a},${b}</sub>`;
+const To = (a, b) => `<span>${Tn(a, b)}</span>`;                 // as a choice option: the button is a flex box
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const is = (x, y) => Number.isFinite(y) && Math.abs(x - y) < 0.011;
+const BUR = 'rgba(255,212,59,.16)', TOOTH = 'rgba(232,234,237,.12)', TPX = 'rgba(232,234,237,.82)', BG = '#0f1115';
+
+// ---- drawing ----
+const small = (st, p, s, color = C.dim, off = [0, 0]) => {
+  const g = st.g, [x, y] = st.px(p); g.font = '12px -apple-system, system-ui, sans-serif'; g.fillStyle = color;
+  g.textAlign = off[0] < 0 ? 'right' : off[0] > 0 ? 'left' : 'center'; g.textBaseline = 'middle'; g.fillText(s, x + off[0], y + off[1]);
+};
+const vtext = (st, p, s, color = C.dim) => {
+  const g = st.g, [x, y] = st.px(p); g.save(); g.translate(x, y); g.rotate(-Math.PI / 2);
+  g.font = '12px -apple-system, system-ui, sans-serif'; g.fillStyle = color; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(s, 0, 0); g.restore();
+};
+const disc = (st, p, r, stroke, fill, dash) => {
+  const g = st.g, [x, y] = st.px(p); g.beginPath(); g.setLineDash(dash || []); g.arc(x, y, Math.max(r * st.s, .6), 0, 7);
+  if (fill) { g.fillStyle = fill; g.fill(); } g.strokeStyle = stroke; g.lineWidth = 2; g.stroke(); g.setLineDash([]);
+};
+const rect = (st, z0, z1, x0, x1, stroke, fill, w = 1.5) => st.poly([[z0, x0], [z1, x0], [z1, x1], [z0, x1]], stroke, fill, w);
+const fade = (st, a, fn) => { st.g.globalAlpha = a; fn(); st.g.globalAlpha = 1; };
+
+// a tooth is a block with a flat face at depth z from x0 to x1, reaching back d mm; a bur is its round section at (x, z)
+const toothPts = ({ x0, x1, z, d = 3 }) => [[z, x0], [z, x1], [z + .55 * d, x1], [z + d, x1 - .9], [z + d, x0 + .9], [z + .55 * d, x0]];
+const spanOf = pts => { const us = pts.map(p => U(p[1], p[0])); return [Math.min(...us), Math.max(...us)]; };
+const toothSpan = t => spanOf(toothPts(t));
+const burSpan = b => [U(b.x - (b.r ?? R), b.z), U(b.x + (b.r ?? R), b.z)];
+// the depth test along one row: for every stretch of pixels keep the surface with the smallest Z
+const visible = objs => {
+  const cuts = [...new Set(objs.flatMap(o => [o.a, o.b]))].sort((p, q) => p - q), out = [];
+  for (let i = 0; i + 1 < cuts.length; i++) {
+    const m = (cuts[i] + cuts[i + 1]) / 2, hit = objs.filter(o => o.a < m && m < o.b).sort((p, q) => p.z - q.z)[0];
+    const last = out[out.length - 1];
+    if (hit && last && last.fill === hit.fill && last.b === cuts[i]) last.b = cuts[i + 1];
+    else if (hit) out.push({ a: cuts[i], b: cuts[i + 1], fill: hit.fill });
+  }
+  return out;
+};
+const rowOf = (tooth, bur) => visible([
+  ...(tooth ? [{ a: toothSpan(tooth)[0], b: toothSpan(tooth)[1], z: tooth.z, fill: TPX }] : []),
+  ...(bur ? [{ a: burSpan(bur)[0], b: burSpan(bur)[1], z: bur.z, fill: C.acc }] : [])]);
+
+const camera = st => {
+  st.line([0, 0], [ZS, 0], C.line, 1, [3, 5]);
+  st.line([0, 0], [ZS, 8], C.line, 1.5, [4, 5]); st.line([0, 0], [ZS, -8], C.line, 1.5, [4, 5]);
+  st.poly([[-1.7, -1.1], [0, -1.1], [0, 1.1], [-1.7, 1.1]], C.ghost, 'rgba(255,255,255,.06)', 1.5);
+  st.arrow([0, 0], [1.7, 0], C.z, 2); st.arrow([0, 0], [0, 1.7], C.x, 2);
+  small(st, [2.2, 0], 'z', C.z); small(st, [0, 2.2], 'x', C.x); st.dot([0, 0], C.fg, null, 3);
+  small(st, [-.85, -1.8], 'camera', C.dim);
+};
+const things = (st, tooth, bur, rays = true, name = true) => {
+  const ray = (u, c) => st.line([0, 0], [ZS, sx(clamp(u, 0, W))], c, 1);
+  if (rays) fade(st, .32, () => { if (tooth) toothSpan(tooth).forEach(u => ray(u, C.fg)); if (bur) burSpan(bur).forEach(u => ray(u, C.acc)); });
+  if (tooth) { st.poly(toothPts(tooth), C.fg, TOOTH); small(st, [tooth.z + (tooth.d ?? 3) / 2, (tooth.x0 + tooth.x1) / 2], 'tooth', C.fg); }
+  if (bur) { disc(st, [bur.z, bur.x], bur.r ?? R, C.acc, BUR); if (name) small(st, [bur.z, bur.x - R], 'bur', C.acc, [0, 10]); }
+};
+// segs: [{ a, b, fill?, stroke? }] in pixel columns
+const strip = (st, segs = []) => {
+  rect(st, ZS, ZS + 1.1, -8, 8, null, BG);
+  for (const s of segs) { const a = clamp(s.a, 0, W), b = clamp(s.b, 0, W); if (b > a) rect(st, ZS, ZS + 1.1, sx(a), sx(b), s.stroke || null, s.fill || null, 2); }
+  rect(st, ZS, ZS + 1.1, -8, 8, C.dim, null, 1.5);
+  small(st, [ZS + 1.1, 8.72], 'u = 640 px', C.dim, [-1, 0]); small(st, [ZS + 1.1, -8.72], 'u = 0', C.dim, [-1, 0]);
+  vtext(st, [ZS + 1.7, 0], 'image row', C.dim);
+};
+
+// ---- learn ----
+
+const oneVertex = v => {
+  const k = pick(v, [
+    { c: [4, 1], p: [4, 2], tooth: { x0: -3, x1: 2, z: 6, d: 1.3 } },
+    { c: [4, -1], p: [4, -2], tooth: { x0: -2, x1: 3, z: 6, d: 1.3 } },
+    { c: [4, 2], p: [4, 1], tooth: { x0: -3, x1: 2, z: 6, d: 1.3 } },
+    { c: [6, -2], p: [6, -3], tooth: { x0: 0, x1: 3, z: 5.5, d: 1.6 } },
+  ]);
+  const S = 8, [Z, X] = k.p, land = q => [S, q[1] * S / q[0]], ans = land(k.p);
+  const bv = Array.from({ length: 8 }, (_, i) => add(k.c, [Math.cos(i * Math.PI / 4), Math.sin(i * Math.PI / 4)])), tv = toothPts(k.tooth);
+  const ext = pts => { const xs = pts.map(q => land(q)[1]); return [Math.min(...xs), Math.max(...xs)]; };
+  let shown = 0;
+  return {
+    concept: 'ren-forward',
+    prompt: `A slice through the scene: the camera looks along z at the bur, end-on (round), in front of the tooth. Both are meshes: dots joined by edges. Their picture forms on the image line at z = ${S}. <b>Tap where the ringed bur vertex lands.</b>`,
+    view: [-1.8, 9.2, -4.8, 4.8],
+    visual: st => {
+      st.draw = () => {
+        st.grid();
+        rect(st, S - .28, S + .28, -4.6, 4.6, C.dim, BG);
+        if (shown) {
+          fade(st, shown, () => { rect(st, S - .28, S + .28, ...ext(tv), null, TPX); rect(st, S - .28, S + .28, ...ext(bv), null, C.acc); });
+          fade(st, .3 * shown, () => { tv.forEach(q => st.line([0, 0], land(q), C.fg, 1)); bv.forEach(q => st.line([0, 0], land(q), C.acc, 1)); });
+          st.line([0, 0], [S * shown, ans[1] * shown], C.acc, 2);
+        }
+        st.poly([[-1.6, -.8], [-.7, -.8], [-.7, .8], [-1.6, .8]], C.ghost, 'rgba(255,255,255,.06)', 1.5);
+        st.line([-.7, .5], [0, 0], C.ghost, 1.5); st.line([-.7, -.5], [0, 0], C.ghost, 1.5); st.dot([0, 0], C.fg, null, 3.5);
+        small(st, [-1.15, -1.25], 'camera', C.dim); small(st, [.3, 4.45], 'x', C.x, [1, 0]); small(st, [8.85, .4], 'z', C.z);
+        st.poly(tv, C.fg, TOOTH); tv.forEach(q => st.dot(q, C.fg, null, 2.5));
+        st.poly(bv, C.acc, BUR); bv.forEach(q => st.dot(q, C.acc, null, 2.5));
+        st.dot(k.p, C.acc, null, 5); st.ring(k.p, C.fg, 10);
+        small(st, [k.tooth.z + k.tooth.d / 2, (k.tooth.x0 + k.tooth.x1) / 2 + (k.tooth.x0 + k.tooth.x1 > 0 ? 1 : -1)], 'tooth', C.fg);
+        small(st, [k.c[0] - 1, k.c[1]], 'bur', C.acc, [-6, 0]);
+        vtext(st, [S + .75, -2.6], 'image line');
+      };
+    },
+    input: {
+      type: 'point', answer: ans,
+      why: t => t[0] !== S ? `Tap on the image line itself, the strip at z = ${S}. That is where the picture forms.`
+        : t[1] === X ? `That is straight across from the vertex, as if its light travelled parallel to the optical axis. The camera sees it along the straight line through the pinhole. Follow that line out to the image line.`
+        : t[1] === land(k.c)[1] ? `That is where the centre of the bur lands. The ringed vertex sits on the rim, 1 mm ${X > k.c[1] ? 'higher' : 'lower'}.`
+        : t[1] === -ans[1] ? `Right distance from the axis, wrong side. A sensor behind the pinhole flips the picture; this image line is in front of it, so +x stays +x.`
+        : `Lay a straight edge from the pinhole through the ringed vertex. The vertex is at Z = ${Z} and the image line at z = ${S}, so the ray has climbed ${S}/${Z} times as far by the time it gets there.`,
+    },
+    explain: `The vertex is at X = ${num(X)}, Z = ${Z} in the camera frame. Its ray reaches the image line at ${S}·X/Z = <b>${num(ans[1])}</b>: similar triangles, the divide by Z. A renderer does this to every vertex of every mesh. The object's pose puts the vertex in the camera frame, dividing by Z puts it on the image line, then distortion and K turn that into a pixel. It is the Unit 2 projection, run forwards over whole models.`,
+    after: st => st.animate(1300, t => { shown = t; }),
+  };
+};
+
+const missing = v => {
+  const k = pick(v, [
+    { free: 'tooth', tooth: { x0: -4, x1: 2, z: 16, d: 3 }, bur: { x: 1.5, z: 10 }, opts: [
+      { html: 'A fixed camera-to-bur offset', why: `The bur is not the loose end: ${Tn('cam', 'bur')} for this frame is already on the list. And there is no fixed offset to give, because the camera is elastic-mounted.` },
+      { html: To('cam', 'tooth'), correct: true },
+      { html: 'The camera\'s pose in the room', why: 'Bur and tooth are placed relative to the camera, and the image depends on nothing else. Carry camera, bur and tooth into another room together and the row is identical.' },
+      { html: 'Nothing is missing', why: 'You moved the tooth while every listed input stayed as it was, and the image row changed. So the list does not pin the image down.' }] },
+    { free: 'bur', tooth: { x0: -3, x1: 4, z: 16.5, d: 3 }, bur: { x: -1, z: 10 }, opts: [
+      { html: To('cam', 'bur'), correct: true },
+      { html: 'Nothing is missing', why: 'You moved the bur while every listed input stayed as it was, and the image row changed. So the list does not pin the image down.' },
+      { html: 'A fixed camera-to-bur offset', why: 'A fixed offset would put the bur at the same place in the camera\'s view in every frame. You just moved it, and the elastic mount lets it move for real. The renderer needs the bur\'s pose for this frame.' },
+      { html: To('tooth', 'cam'), why: `That is the inverse of ${Tn('cam', 'tooth')}, which the renderer already has. It says nothing about the bur.` }] },
+  ]);
+  const have = k.free === 'tooth' ? 'bur' : 'tooth', tooth = { ...k.tooth }, bur = { ...k.bur }, h = (tooth.x1 - tooth.x0) / 2;
+  let off = [0, 0], reveal = false;
+  return {
+    concept: 'ren-inputs',
+    prompt: `The renderer has both STLs, ${Tn('cam', have)}, K, the distortion coefficients and the image size. <b>Drag the ${k.free}.</b> Every spot you try agrees with those inputs, yet the image row (right) changes. <b>Which missing input settles it?</b>`,
+    view: VIEW,
+    visual: st => {
+      st.draw = () => {
+        camera(st); things(st, tooth, bur); strip(st, rowOf(tooth, bur));
+        const t = k.free === 'tooth' ? [(tooth.x0 + tooth.x1) / 2, tooth.z] : [bur.x, bur.z];
+        st.readout(reveal ? `${Tn('cam', k.free)} now: X = ${num(+t[0].toFixed(1))}, Z = ${num(+t[1].toFixed(1))} mm` : '');
+      };
+      st.drag((w, ph) => {
+        if (ph === 'down') { off = sub(k.free === 'tooth' ? [tooth.z, (tooth.x0 + tooth.x1) / 2] : [bur.z, bur.x], w); return; }
+        const q = add(w, off);
+        if (k.free === 'tooth') { tooth.z = clamp(q[0], 12.5, 16.8); const c = clamp(q[1], -4.5, 4.5); tooth.x0 = c - h; tooth.x1 = c + h; }
+        else { bur.z = clamp(q[0], 6, 15.4); const m = .4 * bur.z - R; bur.x = clamp(q[1], -m, m); }
+      });
+    },
+    input: { type: 'choice', cols: 2, options: k.opts },
+    explain: `A render is pinned down by exactly this list: each mesh in its own frame, each object's pose in the camera frame, K, the distortion coefficients and the image size. Drop one and many images fit. In your scene the poses are two separate inputs, ${Tn('cam', 'bur')} and ${Tn('cam', 'tooth')}, new for every frame. There is no camera-to-bur constant to configure: the camera is elastic-mounted.`,
+    after: st => { reveal = true; st.redraw(); },
+  };
+};
+
+// occlusion scenes: spans and the answer all follow from the geometry
+const occ = k => {
+  const ts = [U(k.tooth.x0, k.tooth.z), U(k.tooth.x1, k.tooth.z)], bs = burSpan(k.bur), zt = k.tooth.z, zb = k.bur.z;
+  const lo = Math.max(ts[0], bs[0]), hi = Math.min(ts[1], bs[1]), ov = Math.max(0, hi - lo);
+  const mine = k.ask === 'tooth' ? ts : bs, theirs = k.ask === 'tooth' ? bs : ts, other = k.ask === 'tooth' ? 'bur' : 'tooth';
+  const z = k.ask === 'tooth' ? zt : zb, zo = k.ask === 'tooth' ? zb : zt, hidden = z > zo ? ov : 0;
+  return { ...k, ts, bs, zt, zb, lo, hi, ov, mine, other, z, zo, hidden, width: mine[1] - mine[0], otherWidth: theirs[1] - theirs[0], ans: mine[1] - mine[0] - hidden,
+    near: zt < zb ? 'tooth' : 'bur', far: zt < zb ? 'bur' : 'tooth' };
+};
+const occWhy = o => x =>
+  o.hidden && is(x, o.width) ? `That is the ${o.ask}'s whole span. On ${o.ov} of those pixels the ${o.other} lands too, and it is nearer (${o.zo} mm against ${o.z} mm), so it takes them.`
+  : o.hidden && is(x, o.ov) && o.ov !== o.ans ? `${o.ov} is the number of ${o.ask} pixels that get hidden. The question is how many still show: take them off the ${o.width}-pixel span.`
+  : !o.hidden && is(x, o.width - o.ov) ? `You took the shared pixels away from the ${o.ask}, but there the ${o.ask} is the nearer surface (${o.z} mm against ${o.zo} mm). The nearer surface is never the hidden one.`
+  : is(x, o.otherWidth) && o.otherWidth !== o.ans ? `That is the width of the ${o.other}'s span. The question is about the ${o.ask}.`
+  : `Go pixel by pixel. The ${o.ask} lands on ${o.width} pixels (${o.mine[0]} to ${o.mine[1]}). The two spans share ${o.ov} of them (${o.lo} to ${o.hi}), and there the surface with the smaller Z shows: the ${o.near}, at ${Math.min(o.zt, o.zb)} mm.`;
+const occExplain = o => `Per pixel, the surface with the smaller Z is the one the camera sees. The spans share pixels ${o.lo} to ${o.hi}; there the ${o.near} (Z = ${Math.min(o.zt, o.zb)} mm) beats the ${o.far} (Z = ${Math.max(o.zt, o.zb)} mm). So the ${o.ask} shows on <b>${o.hidden ? `${o.width} − ${o.ov} = ` : `all ${o.ov === o.width ? '' : 'of its '}`}${o.ans}</b> pixels${o.hidden ? '' : ', because nothing is in front of it'}. A renderer keeps the winning Z of every pixel in a depth buffer, so the order in which it draws the meshes does not matter.${o.near === 'tooth' ? ' The tooth hiding part of the bur is normal once the bur is down inside a preparation.' : ''}`;
+
+const nearestWins = v => {
+  const o = occ(pick(v, [
+    { tooth: { x0: -4, x1: 4, z: 16, d: 3 }, bur: { x: 1, z: 10 }, ask: 'tooth' },
+    { tooth: { x0: -3, x1: 1, z: 10, d: 3.5 }, bur: { x: 1.2, z: 16 }, ask: 'bur' },
+    { tooth: { x0: -4, x1: 4, z: 16, d: 3 }, bur: { x: 2, z: 8 }, ask: 'tooth' },
+  ]));
+  let sweep = 0;
+  return {
+    concept: 'ren-occlusion',
+    prompt: `On this image row the tooth alone would cover pixels <b>${o.ts[0]} to ${o.ts[1]}</b> (its face is ${o.zt} mm away) and the bur alone <b>${o.bs[0]} to ${o.bs[1]}</b> (${o.zb} mm away). A pixel can show only one. <b>How many pixels end up showing ${o.ask}?</b>`,
+    view: VIEW,
+    visual: st => {
+      st.draw = () => {
+        camera(st); things(st, o.tooth, o.bur);
+        const u = sweep * W;
+        strip(st, [...rowOf(o.tooth, o.bur).filter(s => s.a < u).map(s => ({ ...s, b: Math.min(s.b, u) })),
+          { a: o.ts[0], b: o.ts[1], stroke: C.fg }, { a: o.bs[0], b: o.bs[1], stroke: C.acc }]);
+        if (sweep > 0 && sweep < 1) st.line([0, 0], [ZS, sx(u)], C.fg, 1.5);
+      };
+    },
+    input: { type: 'number', answer: o.ans, unit: 'px', why: occWhy(o) },
+    explain: occExplain(o),
+    after: st => st.animate(1700, t => { sweep = t; }),
+  };
+};
+
+const fitOutline = v => {
+  const k = pick(v, [{ from: [-2, 10], to: [2, 16] }, { from: [3, 14], to: [-1, 10] }, { from: [-1, 16], to: [1, 8] }]);
+  const bur = { x: k.from[0], z: k.from[1] }, goal = burSpan({ x: k.to[0], z: k.to[1] }), gw = goal[1] - goal[0];
+  const lim = z => Math.floor(.4 * z - R);
+  let off = [0, 0];
+  return {
+    concept: 'ren-silhouette',
+    prompt: `In a real frame the bur's outline covers the white bracket on the image row. Your renderer draws the bur where you put it (yellow). <b>Drag the bur until its rendered outline fills the bracket exactly.</b>`,
+    view: VIEW,
+    visual: st => {
+      st.draw = () => {
+        const s = burSpan(bur);
+        camera(st); things(st, null, bur); strip(st, [{ a: s[0], b: s[1], fill: C.acc }]);
+        rect(st, ZS - .3, ZS + 1.3, sx(goal[0]), sx(goal[1]), C.fg, null, 2.5);
+        st.readout(`rendered: px ${fmt(s[0])} to ${fmt(s[1])}, ${fmt(s[1] - s[0])} wide<br>bracket:&nbsp; px ${goal[0]} to ${goal[1]}, ${gw} wide`);
+      };
+      st.drag((w, ph) => {
+        if (ph === 'down') { off = sub([bur.z, bur.x], w); return; }
+        const q = add(w, off); bur.z = clamp(Math.round(q[0]), 8, 16); bur.x = clamp(Math.round(q[1]), -lim(bur.z), lim(bur.z)) + 0;
+      });
+    },
+    input: {
+      type: 'custom',
+      check: () => {
+        const s = burSpan(bur), w = s[1] - s[0];
+        return { correct: bur.x === k.to[0] && bur.z === k.to[1], why: Math.abs(w - gw) > .5
+          ? `Your outline is ${fmt(w)} px wide and the bracket ${gw}. ${w > gw ? 'Wider means nearer: push the bur away from the camera' : 'Narrower means farther: pull the bur toward the camera'} until the widths agree, then slide it across.`
+          : `The width matches, so the depth is right. The outline sits too ${s[0] < goal[0] ? 'low' : 'high'} on the row: slide the bur ${s[0] < goal[0] ? 'up' : 'down'} without changing its depth.` };
+      },
+      solve: wrong => { [bur.x, bur.z] = wrong ? k.from : k.to; },
+    },
+    explain: `Sliding the bur across moved its outline along the row; changing its depth changed the outline's width, about f·d/Z = 800 × 1.6 / ${k.to[1]} = ${gw} px. So an outline can be read back as a pose: two edges, two numbers, X and Z. Render, compare with the real frame, adjust: you did by hand what Units 5 and 6 automate. (Strictly the edge rays graze the cylinder just in front of its centre, a pixel or two off. Unit 5 does that exactly.)`,
+  };
+};
+
+const units = v => {
+  const k = pick(v, [{ kind: 'close', Z: 10 }, { kind: 'small', Z: 10 }, { kind: 'close', Z: 8 }, { kind: 'small', Z: 8 }]);
+  const close = k.kind === 'close', w = F * D / k.Z, tooth = { x0: -4, x1: 4, z: 16, d: 3 }, X = 1;
+  let s = 0;
+  const K = 'K only turns the ratio X/Z into pixels. The ratio comes out right only when the mesh\'s X and the pose\'s Z are in the same unit, and here one is in mm and the other in metres.';
+  return {
+    concept: 'ren-units',
+    prompt: close
+      ? `The bur STL is in mm: ${D} mm across. You want it ${k.Z} mm from the camera, but the pose file is in metres, so it says Z = ${k.Z / 1000}. The renderer reads every number as mm. <b>What does it draw?</b>`
+      : `The bur STL was exported in metres: it is ${D / 1000} across. Its pose is in mm: Z = ${k.Z}. The renderer reads every number as the same unit. <b>What does it draw?</b>`,
+    view: VIEW,
+    visual: st => {
+      st.draw = () => {
+        const m = Math.pow(.001, s), bur = close ? { x: X * m, z: k.Z * m } : { x: X, z: k.Z, r: R * m };
+        camera(st); things(st, tooth, bur, s < .5 || !close, s < .5 || !close);
+        if (s) { disc(st, [k.Z, X], R, C.ghost, null, [4, 4]); small(st, [k.Z, X + R], 'intended', C.ghost, [0, -13]); }
+        strip(st, rowOf(tooth, bur));
+        st.readout(s < 1 ? `intended: bur ${k.Z} mm away, ${fmt(w)} px wide`
+          : close ? `as rendered: bur ${k.Z / 1000} mm from the pinhole` : `as rendered: bur ${+(w / 1000).toFixed(3)} px wide`);
+      };
+    },
+    input: { type: 'choice', cols: 2, options: [
+      { html: 'The bur, 1000× too close', correct: close, why: 'That is the opposite mix-up: mesh in mm with the distance in metres. Here the distance is as intended. It is the mesh\'s own numbers that are 1000× too small.' },
+      { html: 'The intended image', why: K },
+      { html: 'The bur, 1000× too small', correct: !close, why: 'That is the opposite mix-up: mesh numbers 1000× too small with the distance right. Here the mesh is fine and the distance number is 1000× too small, which brings the bur nearer.' },
+      { html: 'Right size, wrong place', why: close ? 'Apparent size goes as 1/Z: width ≈ f·d/Z. A Z that is 1000× too small cannot leave the size alone.' : 'The pose is as intended, so the bur\'s centre lands on the intended pixel. What is wrong is its size: every mesh coordinate is 1000× too small.' }] },
+    explain: (close
+      ? `The renderer puts the bur ${k.Z / 1000} mm from the pinhole, 1000× too close, with the camera inside the ${D} mm mesh. The row is swamped by bur (or left empty, if the renderer skips surfaces seen from inside).`
+      : `Width ≈ f·d/Z = 800 × ${D / 1000} / ${k.Z} = ${+(w / 1000).toFixed(3)} px, far under one pixel, so the bur vanishes from the row. To the renderer this is a ${D} mm bur ${k.Z} m away.`)
+      + ` Nothing in the pipeline knows about units, so mesh and pose must share one. STL scans usually come in mm; tracking and robot code often use metres. Convert once, on load.`,
+    after: st => st.animate(1500, t => { s = t; }),
+  };
+};
+
+// ---- problems ----
+
+const pVertex = v => {
+  const k = pick(v, [
+    { obj: 'bur', p: [1, 2, 0], t: [1, -1, 10], inv: false, i: 0 },
+    { obj: 'tooth', p: [-1, 2, 0], t: [3, -1, 16], inv: true, i: 1 },
+    { obj: 'bur', p: [0, 1, 1], t: [2, 1, 7], inv: false, i: 1 },
+    { obj: 'tooth', p: [1, 0, -1], t: [-3, 2, 11], inv: true, i: 0 },
+    { obj: 'bur', p: [2, -1, 0], t: [-4, -1, 20], inv: false, i: 0 },
+  ]);
+  const { obj, p, t, i } = k, pc = add(p, t), c = [CX, CY];
+  const proj = q => q[2] > 0 ? [CX + F * q[0] / q[2], CY + F * q[1] / q[2]] : [NaN, NaN];
+  const px = proj(pc), given = k.inv ? t.map(x => -x || 0) : t, name = k.inv ? Tn(obj, 'cam') : Tn('cam', obj);
+  const fr = (a, b) => a < 0 ? `(−${-a}/${b})` : `${a}/${b}`;
+  return {
+    concept: 'ren-forward',
+    prompt: `Camera: f = ${F} px, principal point (${CX}, ${CY}), no distortion. A ${obj} vertex sits at <b>${vec(p)}</b> mm in the ${obj} frame. ${name} has no rotation and translation <b>${vec(given)}</b> mm. <b>Which pixel ${i ? 'row v' : 'column u'} does the vertex render to?</b>`,
+    input: {
+      type: 'number', answer: px[i], unit: 'px',
+      why: x => is(x, px[1 - i]) ? `That is the ${i ? 'column u, which comes from X' : 'row v, which comes from Y'}. The ${i ? 'row v comes from Y' : 'column u comes from X'}.`
+        : is(x, F * pc[i] / pc[2]) ? `That is f·${'XY'[i]}/Z, measured from the principal point. Pixels count from the top-left corner: add c<sub>${'xy'[i]}</sub> = ${c[i]}.`
+        : is(x, proj(sub(p, t))[i]) ? (k.inv
+          ? `You added the translation as written. ${name} converts camera coordinates into ${obj} coordinates, the wrong way for rendering. With no rotation, ${Tn('cam', obj)} has the opposite translation, ${vec(t)}.`
+          : `You subtracted the translation. ${name} converts ${obj} coordinates into camera coordinates as it stands: p<sub>cam</sub> = p + t.`)
+        : is(x, proj(t)[i]) ? `That is where the origin of the ${obj} frame renders. The vertex is offset from the origin by ${vec(p)}; add that before dividing by Z.`
+        : `Three steps. Camera frame: p<sub>cam</sub> = p + t, with t the translation of ${Tn('cam', obj)}${k.inv ? ` (the opposite of the one given for ${name})` : ''}. Divide by Z. Then ${'uv'[i]} = ${c[i]} + f·${'XY'[i]}/Z.`,
+    },
+    explain: `${k.inv ? `${name} converts camera coordinates into ${obj} coordinates. Rendering needs the other direction: with no rotation, ${Tn('cam', obj)} has translation ${vec(t)}. ` : ''}Camera frame: p<sub>cam</sub> = ${vec(p)} + ${vec(t)} = ${vec(pc)}. Divide by Z = ${pc[2]}, then K: u = ${CX} + ${F}·${fr(pc[0], pc[2])} = ${px[0]}, v = ${CY} + ${F}·${fr(pc[1], pc[2])} = ${px[1]}. Rendering a mesh is this projection, repeated for every vertex.`,
+  };
+};
+
+const pOcclusion = v => {
+  const o = occ(pick(v, [
+    { tooth: { x0: -4, x1: 4, z: 16 }, bur: { x: 1, z: 10 }, ask: 'tooth' },
+    { tooth: { x0: -3, x1: 1, z: 10 }, bur: { x: 1.2, z: 16 }, ask: 'bur' },
+    { tooth: { x0: -4, x1: 4, z: 16 }, bur: { x: 2, z: 8 }, ask: 'bur' },
+    { tooth: { x0: -3, x1: 2, z: 10 }, bur: { x: 3.2, z: 16 }, ask: 'tooth' },
+    { tooth: { x0: -2, x1: 4, z: 16 }, bur: { x: -1, z: 10 }, ask: 'tooth' },
+    { tooth: { x0: -3, x1: 2, z: 10 }, bur: { x: 1.2, z: 16 }, ask: 'bur' },
+  ]));
+  return {
+    concept: 'ren-occlusion',
+    prompt: `One image row. The tooth lands on pixels <b>${o.ts[0]} to ${o.ts[1]}</b> at depth ${o.zt} mm. The bur lands on pixels <b>${o.bs[0]} to ${o.bs[1]}</b> at depth ${o.zb} mm. <b>How many pixels of the row show ${o.ask}?</b>`,
+    input: { type: 'number', answer: o.ans, unit: 'px', why: occWhy(o) },
+    explain: occExplain(o),
+  };
+};
+
+const pTaper = v => {
+  const k = pick(v, [{ zT: 16, zS: 20, ask: 'tip' }, { zT: 20, zS: 16, ask: 'tip' }, { zT: 10, zS: 16, ask: 'shank' }, { zT: 8, zS: 10, ask: 'tip' }, { zT: 20, zS: 10, ask: 'shank' }]);
+  const wT = Math.round(F * D / k.zT), wS = Math.round(F * D / k.zS), tip = k.ask === 'tip';
+  const ans = tip ? k.zT : k.zS, zo = tip ? k.zS : k.zT, w = tip ? wT : wS, wo = tip ? wS : wT, other = tip ? 'shank' : 'tip', u0 = 200, vT = 250;
+  const how = `Z = f·d/width = ${F} × ${D} / ${w}`;
+  return {
+    concept: 'ren-silhouette',
+    prompt: `A rendered frame, f = ${F} px. The bur's shank is a cylinder <b>${D} mm</b> across. Its outline is <b>${wT} px</b> wide at the tip end and <b>${wS} px</b> wide at the shank end. <b>How far from the camera is the ${k.ask} end?</b>`,
+    view: [-10, 650, -488, 8],
+    visual: st => {
+      st.draw = () => {
+        rect(st, 0, W, -480, 0, C.line, BG);
+        st.poly([[150, -480], [165, -385], [235, -322], [330, -352], [430, -318], [500, -385], [515, -480]], C.fg, TOOTH);
+        st.poly([[u0 - wS / 2, 0], [u0 + wS / 2, 0], [u0 + wT / 2, -vT], [u0 - wT / 2, -vT]], C.acc, BUR);
+        st.label([u0 + wS / 2, -34], `shank end: ${wS} px`, C.acc, [12, 0]); st.label([u0 + wT / 2, -vT + 26], `tip end: ${wT} px`, C.acc, [12, 0]);
+        small(st, [330, -430], 'tooth', C.fg);
+      };
+    },
+    input: {
+      type: 'number', answer: ans, unit: 'mm',
+      why: x => is(x, zo) ? `That is the ${other} end, from its ${wo} px. The ${k.ask} end is ${w} px wide: ${how}.`
+        : is(x, F / w) ? `f/width leaves out the bur's real size. Width ≈ f·d/Z, so ${how}.`
+        : is(x, Math.abs(k.zT - k.zS)) ? `That is how much nearer one end is than the other. The question asks for the ${k.ask} end's own distance: ${how}.`
+        : `A cylinder ${D} mm across at depth Z renders about f·d/Z pixels wide. Turn that around for the ${k.ask} end: ${how}.`,
+    },
+    explain: `Width ≈ f·d/Z, so Z = f·d/width. Tip end: ${F} × ${D} / ${wT} = ${k.zT} mm. Shank end: ${F} × ${D} / ${wS} = ${k.zS} mm. The outline tapers because the bur is tilted, its tip ${Math.abs(k.zT - k.zS)} mm ${k.zT < k.zS ? 'nearer the camera' : 'farther from the camera'} than the shank end. Where the outline sits, how wide it is and how it tapers are all set by the pose, which is why Unit 5 can read the pose back out of the outline.`,
+  };
+};
+
+const pInputs = v => {
+  const room = { html: 'The camera\'s pose in the room', why: 'Every pose on the list is already in the camera frame, and the image depends on nothing beyond that. Moving camera, bur and tooth together changes no pixel.' };
+  const fixed = why => ({ html: 'A fixed camera-to-bur offset', why });
+  const both = `${Tn('cam', 'bur')}, ${Tn('cam', 'tooth')}`;
+  const k = pick(v, [
+    { has: `both STLs, ${both}, K and the distortion coefficients`, opts: [
+      room, { html: 'The image size', correct: true },
+      fixed(`${Tn('cam', 'bur')} for this frame is already on the list, and with an elastic mount no fixed offset exists.`),
+      { html: 'Nothing is missing', why: 'K says where each ray lands in pixel units, but not where the image stops. Without the width and height the renderer does not know which pixels exist.' }] },
+    { has: `both STLs, ${Tn('cam', 'tooth')}, ${Tn('tooth', 'bur')}, K, the distortion coefficients and the image size`, opts: [
+      { html: To('cam', 'bur'), why: `It follows from what is there: ${Tn('cam', 'bur')} = ${Tn('cam', 'tooth')} · ${Tn('tooth', 'bur')}. Each object's pose in the camera frame is known.` },
+      fixed(`The bur's pose in the camera frame comes from the chain ${Tn('cam', 'tooth')} · ${Tn('tooth', 'bur')} for this frame. With an elastic mount no fixed offset exists.`),
+      { html: 'Nothing is missing', correct: true }, room] },
+    { has: `both STLs, ${Tn('cam', 'bur')}, K, the distortion coefficients and the image size`, opts: [
+      { html: To('bur', 'cam'), why: `That is the inverse of ${Tn('cam', 'bur')}, which is on the list. It adds nothing.` },
+      { html: 'Nothing is missing', why: 'Bur and tooth are separate rigid bodies. Knowing where the bur is says nothing about where the tooth is.' },
+      room, { html: To('cam', 'tooth'), correct: true }] },
+    { has: `both STLs, ${both}, the distortion coefficients and the image size`, opts: [
+      { html: 'K', correct: true }, room,
+      { html: 'Nothing is missing', why: 'Without the focal length and principal point there is no way from X/Z to pixels. The same scene could fill the image or be a speck in it.' },
+      fixed(`${Tn('cam', 'bur')} for this frame is already on the list, and with an elastic mount no fixed offset exists.`)] },
+    { has: `both STLs, ${Tn('world', 'bur')}, ${Tn('world', 'tooth')}, K, the distortion coefficients and the image size`, opts: [
+      { html: 'Nothing is missing', why: `These poses are in the world frame. The pipeline needs each object in the camera frame, for example ${Tn('cam', 'bur')} = ${Tn('cam', 'world')} · ${Tn('world', 'bur')}, and nothing on the list ties the world to the camera.` },
+      fixed(`A camera-to-bur transform for this frame would place the bur but still not the tooth, and with an elastic mount it is not fixed. What ties both to the camera is ${Tn('cam', 'world')}.`),
+      { html: To('cam', 'world'), correct: true },
+      { html: To('bur', 'tooth'), why: `That follows from the two world poses already listed. It still does not say where the camera is looking from.` }] },
+  ]);
+  return {
+    concept: 'ren-inputs',
+    prompt: `For one frame the renderer is handed: ${k.has}. <b>What is still missing before the image is determined?</b>`,
+    input: { type: 'choice', cols: 2, options: k.opts },
+    explain: `A render needs each mesh in its own frame, each object's pose in the camera frame, K, the distortion coefficients and the image size: nothing less, nothing more. How the poses are obtained is up to you (a chain such as ${Tn('cam', 'tooth')} · ${Tn('tooth', 'bur')} is fine), but they are per-frame inputs. The camera is elastic-mounted, so no fixed camera-to-bur offset can stand in for them.`,
+  };
+};
+
+const pUnits = v => {
+  const k = pick(v, [{ mix: true, Z: 16 }, { mix: false, Z: 10 }, { mix: true, Z: 8 }, { mix: false, Z: 20 }, { mix: true, Z: 32 }]);
+  const d = D / 1000, z = k.mix ? k.Z : k.Z / 1000, ans = r6(F * d / z), good = r6(F * D / k.Z);
+  return {
+    concept: 'ren-units',
+    prompt: `f = ${F} px. The bur STL was exported in <b>metres</b>: its shank is ${d} across. Its pose is in <b>${k.mix ? 'mm' : 'metres'}${k.mix ? '' : ' too'}</b>: Z = ${z}. The renderer treats every number as the same unit. <b>How many pixels wide does the shank render?</b>`,
+    input: {
+      type: 'number', answer: ans, tol: 0.001, unit: 'px',
+      why: x => k.mix && is(x, good) ? `${good} px is what you get when mesh and pose share a unit. Here the mesh numbers are in metres and Z is in mm, and the renderer divides one by the other as they stand.`
+        : k.mix && is(x, good * 1000) ? `That is the opposite mix-up (mesh in mm, Z in metres). Here it is the mesh numbers that are 1000× smaller, so the bur comes out 1000× too thin.`
+        : !k.mix && (is(x, good / 1000) || is(x, good * 1000)) ? `Mesh and pose are both in metres here, so d/Z is the same ratio it would be in mm. Only a mismatch is 1000× off.`
+        : `The renderer sees only numbers: width ≈ f·d/Z = ${F} × ${d} / ${z}.`,
+    },
+    explain: `Width ≈ f·d/Z = ${F} × ${d} / ${z} = <b>${ans} px</b>. ` + (k.mix
+      ? `With both in mm it would be ${good} px. A shank a fraction of a pixel wide means the bur is missing from the render: the mesh is 1000× too small for the distance it was placed at.`
+      : `That is the same as ${F} × ${D} / ${k.Z} in mm: the unit cancels in d/Z. Which unit you pick does not matter; mixing two does.`),
+  };
+};
+
+Reps.lesson({
+  id: 'u3-render-loop',
+  title: 'Rendering is projection',
+  learn: [oneVertex, missing, nearestWins, fitOutline, units],
+  problems: [pVertex, pOcclusion, pTaper, pInputs, pUnits],
+});
+</script>
+</body>
+</html>

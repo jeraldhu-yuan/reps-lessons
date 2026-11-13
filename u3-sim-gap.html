@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<link rel="stylesheet" href="shared/reps.css">
+<script src="shared/reps.js"></script>
+</head>
+<body>
+<script>
+const { C, fmt, pick } = Reps;
+const eq = (a, b) => Math.abs(a - b) < 0.011;
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const BG = '#07090c', METAL = '#aab2bf';
+
+// A small camera image: dark background with the shank as a bright horizontal band.
+// o: yc (0-1 down the box), hw (half-width, world units), blur (world units), end (0-1: shank stops there and a bur head follows),
+//    tooth, glare [{fx, fy?, r, a}], mist [fx0, fx1, alpha], drops [[fx, fy, r]], noise (0-1), alpha
+const img = (st, [x0, y0, x1, y1], o = {}) => {
+  const g = st.g, [l, t] = st.px([x0, y1]), [r, b] = st.px([x1, y0]), w = r - l, h = b - t;
+  const yc = t + h * (o.yc ?? .5), hw = (o.hw ?? .3) * st.s, bl = clamp((o.blur || 0) * st.s, .6, 2 * hw - .6);
+  const fy = y => clamp((y - t) / h, 0, 1);
+  g.save(); g.globalAlpha = o.alpha ?? 1; g.beginPath(); g.rect(l, t, w, h); g.clip();
+  g.fillStyle = BG; g.fillRect(l, t, w, h);
+  if (o.tooth) { g.fillStyle = '#d9d2bd'; g.beginPath(); g.ellipse(l + w * .9, t + h * .78, w * .16, h * .55, 0, 0, 7); g.fill(); }
+  const gr = g.createLinearGradient(0, t, 0, b);
+  gr.addColorStop(fy(yc - hw - bl / 2), 'rgba(170,178,191,0)'); gr.addColorStop(fy(yc - hw + bl / 2), METAL);
+  gr.addColorStop(fy(yc + hw - bl / 2), METAL); gr.addColorStop(fy(yc + hw + bl / 2), 'rgba(170,178,191,0)');
+  const xe = l + w * (o.end ?? 1);
+  g.fillStyle = gr; g.fillRect(l, t, xe - l, h);
+  if (o.end) { g.fillStyle = g.shadowColor = '#8c95a3'; g.shadowBlur = bl * 2; g.beginPath(); g.ellipse(xe + hw * 1.3, yc, hw * 1.9, hw * 1.25, 0, 0, 7); g.fill(); g.shadowBlur = 0; }
+  for (const q of o.glare || []) {
+    g.save(); g.translate(l + w * q.fx, q.fy == null ? yc - hw : t + h * q.fy); g.scale(1.8, 1);
+    const rg = g.createRadialGradient(0, 0, 0, 0, 0, q.r);
+    rg.addColorStop(0, `rgba(255,255,255,${q.a})`); rg.addColorStop(.6, `rgba(255,255,255,${q.a})`); rg.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = rg; g.beginPath(); g.arc(0, 0, q.r, 0, 7); g.fill(); g.restore();
+  }
+  if (o.mist) {
+    const [a, c, al] = o.mist, mg = g.createLinearGradient(l + w * a, 0, l + w * c, 0);
+    mg.addColorStop(0, 'rgba(150,166,182,0)'); mg.addColorStop(.18, `rgba(150,166,182,${al})`); mg.addColorStop(.82, `rgba(150,166,182,${al})`); mg.addColorStop(1, 'rgba(150,166,182,0)');
+    g.fillStyle = mg; g.fillRect(l + w * a, t, w * (c - a), h);
+  }
+  for (const [dx, dy, dr] of o.drops || []) {
+    const cx = l + w * dx, cy = t + h * dy;
+    g.beginPath(); g.fillStyle = 'rgba(176,202,228,.72)'; g.arc(cx, cy, dr, 0, 7); g.fill();
+    g.strokeStyle = 'rgba(255,255,255,.55)'; g.lineWidth = 1; g.stroke();
+    g.beginPath(); g.fillStyle = 'rgba(255,255,255,.9)'; g.arc(cx - dr * .35, cy - dr * .35, dr * .22, 0, 7); g.fill();
+  }
+  if (o.noise) {
+    let s = 7; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
+    for (let i = 0; i < 260 * o.noise; i++) { g.fillStyle = rnd() < .5 ? 'rgba(255,255,255,.3)' : 'rgba(0,0,0,.45)'; g.fillRect(l + rnd() * w, t + rnd() * h, 2, 2); }
+  }
+  g.restore();
+  g.strokeStyle = C.line; g.lineWidth = 1; g.strokeRect(l, t, w, h);
+};
+
+// One image row across a shank edge: the pixels on top, their intensity profile below.
+// The edge is at X0 when the shutter opens and at X0 + L when it closes. o: top, lab, limit, hint
+const X0 = 2, PB = 1.7, PT = 6.1;
+const row = (st, L, o = {}) => {
+  const g = st.g, inten = x => L < 1e-6 ? +(x < X0) : clamp(1 - (x - X0) / L, 0, 1);
+  for (let c = -1; c < 15; c++) {
+    let s = 0; for (let k = 0; k < 8; k++) s += inten(c + (k + .5) / 8) / 8;
+    const lv = Math.round(22 + s * 160);
+    st.poly([[c, 7.3], [c + 1, 7.3], [c + 1, 9.1], [c, 9.1]], '#0f1115', `rgb(${lv},${lv + 6},${lv + 14})`, 1);
+  }
+  st.label([-.75, 8.2], 'shank', '#111', [1, 0]); st.label([14.8, 8.2], 'background', C.dim, [-1, 0]);
+  for (let x = -1; x <= 15; x++) st.line([x, PB], [x, PT], C.line, 1);
+  st.line([-1, PB], [15, PB], C.ghost, 1.5);
+  g.font = '11px ui-monospace, Menlo, monospace'; g.fillStyle = C.dim; g.textAlign = 'center'; g.textBaseline = 'top';
+  for (let x = 0; x <= 12; x += 2) { const [a, b] = st.px([X0 + x, PB]); g.fillText(x ? x : '0 px', a, b + 4); }
+  if (o.top) st.label([-.9, 6.68], o.top, C.dim, [1, 0]);
+  if (o.limit) st.line([X0, PT], [X0 + o.limit, PB], C.y, 2, [5, 5]);
+  st.line([-1, PT], [X0, PT], C.fg, 2.5); st.line([X0, PT], [X0 + L, PB], C.fg, 2.5); st.line([X0 + L, PB], [15, PB], C.fg, 2.5);
+  st.line([X0, .5], [X0 + L, .5], C.acc, 2.5); st.line([X0, .28], [X0, .72], C.acc, 2.5); st.line([X0 + L, .28], [X0 + L, .72], C.acc, 2.5);
+  st.label([X0 + L, .5], o.lab || 'blur length', C.acc, [10, 0]);
+  st.dot([X0 + L, PB], C.acc, null, 7);
+  if (o.hint) st.label([X0 + L, PB], 'drag ↔', C.acc, [12, -14]);
+};
+const rowView = [-1, 15, 0, 9.4];
+
+// ---- learn ----
+
+const FX = {
+  blur: { name: 'motion blur', tile: 1, o: { blur: .5 },
+    why: 'Motion blur does not remove the edge or bleach it. While the shutter is open the edge slides across several pixels, so its sharp step is spread over all of them.' },
+  glare: { name: 'glare', tile: 2, o: { glare: [{ fx: .5, r: 11, a: 1 }] },
+    why: 'Glare is the lamp mirrored in wet metal or enamel. It drives a patch of pixels to pure white, and inside that patch there is no step left to fit. On either side of the patch the edge is untouched.' },
+  spray: { name: 'water spray', tile: 0, o: { mist: [.28, .9, .9], drops: [[.36, .3, 5], [.46, .72, 7], [.55, .36, 6], [.64, .62, 8], [.73, .3, 5], [.81, .68, 6]] },
+    why: 'Spray puts mist and droplets between the lens and the shank. Where it is dense the edge is not smeared or bleached: it is not in the image at all.' },
+};
+const edgeEffects = v => {
+  const seq = pick(v, [['blur', 'glare', 'spray'], ['spray', 'blur', 'glare'], ['glare', 'spray', 'blur']]);
+  const ans = seq.map(k => FX[k].tile), box = i => [3.5, 5.33 - 1.7 * i, 11.8, 6.78 - 1.7 * i];
+  let shown = 0;
+  return {
+    concept: 'gap-sources',
+    prompt: `Your tracker fits the two long edges of the shank (dashed yellow). A clean render draws them crisp. A real clip adds <b>${FX[seq[0]].name}</b>, <b>${FX[seq[1]].name}</b> and <b>${FX[seq[2]].name}</b>. <b>Tap what each does to an edge, in that order.</b>`,
+    view: [0, 12, 0, 7],
+    visual: st => {
+      st.draw = () => {
+        img(st, box(0)); st.label([.2, 6.05], 'clean render', C.fg, [1, 0]);
+        st.line([3.5, 6.355], [11.8, 6.355], C.acc, 1.5, [5, 4]); st.line([3.5, 5.755], [11.8, 5.755], C.acc, 1.5, [5, 4]);
+        seq.forEach((k, i) => {
+          const b = box(i + 1), yc = (b[1] + b[3]) / 2;
+          st.label([.2, yc], '+ ' + FX[k].name, C.fg, [1, 0]);
+          st.poly([[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]], C.line, BG, 1);
+          if (shown < 1) st.label([7.65, yc], '?', C.dim);
+          if (shown) img(st, b, { ...FX[k].o, alpha: shown });
+        });
+      };
+    },
+    input: {
+      type: 'order', tiles: ['hides it', 'widens it into a ramp', 'cuts a white gap in it', 'leaves it crisp'], answer: ans,
+      why: o => { const i = o.findIndex((t, j) => t !== ans[j]), e = FX[seq[i]]; return `Look again at <b>${e.name}</b>. ` + (o[i] === 3 ? 'None of the three leaves an edge alone. ' : '') + e.why; },
+    },
+    explain: 'Blur widens an edge, glare breaks it, spray hides it. A clean render has none of them. It gets the geometry right and leaves out what the mouth does to the image: spray and droplets, motion blur, glare on wet enamel and metal, debris and saliva, uneven lighting, and the tooth hiding part of the bur (a render of the bur alone shows all of it). The Unit 0 lab count, frames with the shank visible dry versus under spray, measures how often those edges are there to fit at all.',
+    after: st => st.animate(900, t => { shown = t; }),
+  };
+};
+
+const smear = v => {
+  const k = pick(v, [{ t: 10, vmax: 400, ask: 1000 }, { t: 20, vmax: 200, ask: 600 }, { t: 5, vmax: 800, ask: 1600 }]);
+  const ans = k.ask * k.t / 1000, speed = L => Math.round(L / k.t * 1000);
+  let L = 1, hi = k.vmax * k.t / 1000, done = false, touched = false;
+  return {
+    concept: 'gap-motion-blur',
+    prompt: `One image row across a shank edge. The edge slides sideways while the shutter is open for <b>${k.t} ms</b>. <b>Drag the yellow dot</b> to set its speed (up to ${k.vmax} px/s) and watch the smear. <b>How long is the blur at ${k.ask} px/s?</b>`,
+    view: rowView,
+    visual: st => {
+      st.draw = () => {
+        row(st, L, { top: 'intensity along the row', hint: !touched, lab: done ? `${fmt(L)} px` : 'blur length' });
+        st.readout(`image speed <b>${speed(L)}</b> px/s · exposure ${k.t} ms` + (done ? `<br><span class="ca">blur = ${speed(L)} × ${k.t / 1000} = ${fmt(L)} px</span>` : ''));
+      };
+      st.drag(w => { touched = true; L = clamp(Math.round((w[0] - X0) * 2) / 2, 0, hi); });
+    },
+    input: {
+      type: 'number', answer: ans, unit: 'px',
+      why: x => eq(x, hi) ? `${fmt(hi)} px is the blur at the control's top speed, ${k.vmax} px/s. The question is about ${k.ask} px/s, beyond where the control goes.`
+        : eq(x, k.ask * k.t) ? `You multiplied px per second by milliseconds. ${k.t} ms is ${k.t / 1000} s.`
+        : eq(x, k.ask / k.t) ? 'You divided speed by exposure. A longer exposure gives the edge more time to travel, so the blur grows with it.'
+        : `Drag and read the ramp: at ${k.vmax / 4} px/s it covers 1 px, at ${k.vmax / 2} px/s 2 px, at ${k.vmax} px/s 4 px. The blur grows in step with the speed. Carry that on to ${k.ask} px/s.`,
+    },
+    explain: `While the shutter is open the edge keeps moving, so it paints itself over every pixel it crosses: <b>blur length = image speed × exposure time</b>. Here ${k.ask} px/s × ${k.t / 1000} s = <b>${ans} px</b>. The crisp step becomes a ramp that wide. Only motion across an edge smears it: a straight edge sliding along itself looks the same.`,
+    after: st => { const L0 = L; hi = ans; touched = true; st.animate(1100, t => { L = L0 + (ans - L0) * t; done = t === 1; }); },
+  };
+};
+
+const DROPS = [[.2, .22, 7], [.55, .72, 9], [.66, .7, 6], [.3, .66, 5], [.46, .18, 8], [.88, .2, 7], [.79, .42, 10], [.1, .55, 6], [.62, .5, 7]];
+const degrade = v => {
+  const k = pick(v, [
+    { ask: 'You rendered this frame from a pose you chose, so the true tip position is known exactly. <b>Drag right</b> to add blur, glare, droplets and noise to the pixels. <b>What happens to the ground truth?</b>', opts: [
+      { html: 'It becomes approximate, like the image', why: 'Ground truth was never read from the image. It is the pose you typed into the renderer, and you did not change it.' },
+      { html: 'Nothing. It is the pose you rendered from.', correct: true },
+      { html: 'It must be re-measured from the damaged frame', why: 'Measuring from the frame is the tracker\'s job. Ground truth is the input that produced the frame, known before any pixel existed.' },
+      { html: 'It is lost where a droplet covers the tip', why: 'The tip is hidden from the camera, not from you. You chose the pose, so you know where the tip is even when no pixel shows it.' }] },
+    { ask: 'You rendered this frame from a pose you chose. <b>Drag right</b> to add blur, glare, droplets and noise. A tracker now gets the tip wrong on the damaged frame. <b>Why can you still say by exactly how much?</b>', opts: [
+      { html: 'Because the damage is mild', why: 'Mild or severe makes no difference. Drag all the way: the error is still exactly computable, for a reason that has nothing to do with the image.' },
+      { html: 'Because the tracker reports its own error', why: 'A tracker cannot know its own error. That takes a reference from outside it.' },
+      { html: 'The true pose was an input; editing pixels does not change it', correct: true },
+      { html: 'You cannot. Exact error needs a clean frame.', why: 'The error compares the tracker\'s answer with the pose you rendered from. The state of the pixels does not enter that comparison.' }] },
+  ]);
+  let s = 0, reveal = false;
+  return {
+    concept: 'gap-degrade',
+    prompt: k.ask,
+    view: [0, 12, 0, 4.6],
+    visual: st => {
+      st.draw = () => {
+        const n = Math.round(9 * s), a = Math.min(1, 1.6 * s);
+        img(st, [.15, .15, 11.85, 4.45], { yc: .4, hw: .42, end: .68, tooth: true, blur: .8 * s, noise: s, mist: [.05, 1, .3 * s], drops: DROPS.slice(0, n),
+          glare: s ? [{ fx: .36, r: 8 + 9 * s, a }, { fx: .92, fy: .5, r: 4 + 5 * s, a }] : [] });
+        if (reveal) { st.line([.15, 2.73], [9.45, 2.73], C.acc, 1.5, [5, 4]); st.dot([9.45, 2.73], C.acc, null, 5); st.ring([9.45, 2.73], C.acc, 10); st.label([9.45, 2.73], 'true tip', C.acc, [-8, -25]); }
+        st.line([1, .62], [11, .62], C.dim, 3); st.dot([1 + 10 * s, .62], C.acc, null, 8);
+        if (!s) st.label([1, .62], 'drag →', C.acc, [14, -15]);
+        st.readout((s ? `added: ${Math.round(8 * s)} px blur, ${n} drops, glare, noise` : 'clean render: nothing added')
+          + (reveal ? '<br><span class="ca">ground truth pose: unchanged</span>' : ''));
+      };
+      st.drag(w => { s = clamp(Math.round((w[0] - 1) * 2) / 20, 0, 1); });
+    },
+    input: { type: 'choice', options: k.opts },
+    explain: 'Ground truth is the pose you gave the renderer, not something read off the image. Blur, glare blobs, droplets and noise change pixels only, so every degraded frame keeps an exact answer. That lets you test robustness before any real data: turn one effect up, rerun the tracker, read the extra tip and axis error. Keep dragging: the yellow overlay never moves.',
+    after: st => { reveal = true; if (!s) st.animate(900, t => { s = .7 * t; }); else st.redraw(); },
+  };
+};
+
+const tuned = v => {
+  const k = pick(v, [{ c: 200, thr: 40 }, { c: 180, thr: 30 }, { c: 240, thr: 60 }]), ans = k.c / k.thr;
+  let L = 1, reveal = false, touched = false;
+  return {
+    concept: 'gap-upper-bound',
+    prompt: `Your edge detector was tuned on clean renders: it accepts an edge only where intensity climbs at least <b>${k.thr} grey levels per px</b>. This edge has ${k.c} levels of contrast. <b>Drag to blur it. What is the longest blur at which the detector still fires?</b>`,
+    view: rowView,
+    visual: st => {
+      st.draw = () => {
+        const ok = k.c / L >= k.thr - 1e-9;
+        row(st, L, { top: `${k.c} grey levels`, hint: !touched && !reveal, lab: `${L} px`, limit: reveal && ans });
+        st.readout(`slope ${k.c} ÷ ${L} = <b>${fmt(k.c / L)}</b> levels per px`
+          + (reveal ? `<br><span class="${ok ? 'cy' : 'cx'}">${ok ? 'detector fires' : 'detector misses the edge'}</span> · dashed: its limit` : ''));
+      };
+      st.drag(w => { touched = true; L = clamp(Math.round(w[0] - X0), 1, 12); });
+    },
+    input: {
+      type: 'number', answer: ans, unit: 'px',
+      why: x => x > ans && x < 1000 ? `At ${fmt(x)} px the edge climbs only ${k.c} ÷ ${fmt(x)} = ${fmt(k.c / x)} levels per px. That is under ${k.thr}, so the detector stays silent.`
+        : x >= 1 && x < ans ? `It does fire at ${fmt(x)} px (${k.c} ÷ ${fmt(x)} = ${fmt(k.c / x)} levels per px), but it still fires at longer blurs. Find the last one that reaches ${k.thr}.`
+        : `A smeared edge climbs contrast ÷ blur length: ${k.c} ÷ L levels per px. Drag and watch the readout. Find the longest L where the slope is still ${k.thr} or more.`,
+    },
+    explain: `A ${k.c}-level edge smeared over L px climbs ${k.c} ÷ L levels per px, so the detector needs L ≤ <b>${ans} px</b>. On clean renders the edge is a 1 px step and it never misses. On a real frame with more blur than that it finds nothing, and no clean score warned you. That is the general rule: accuracy on clean renders is the <b>best case, not a forecast</b>. A method tuned only there does worse on real clips, so report clean, degraded and real numbers separately.`,
+    after: st => { reveal = true; const L0 = L; if (touched) st.redraw(); else st.animate(900, t => { L = Math.round(L0 + (ans - L0) * t); }); },
+  };
+};
+
+const thirdBar = v => {
+  const k = pick(v, [
+    { a: 0.05, b: 0.12, ask: 'What can fill in the third bar?', opts: [
+      { html: 'More renders, with more kinds of degradation', why: 'Every render contains only the effects you thought to add, at strengths you guessed. The third bar is about what the mouth really does, including what you left out.' },
+      { html: 'A real clip, judged by how good the overlay looks', why: 'Looking gives no number in mm. And a tip that is wrong along the viewing ray still projects onto the same pixel, so the overlay hides depth error.' },
+      { html: 'Real clips in which markers give the true pose independently', correct: true },
+      { html: 'The trend: 0.05, then 0.12, so about 0.19', why: 'Two render numbers say nothing about how far real clips sit from the degraded ones. Extending the trend invents a measurement.' }] },
+    { a: 0.04, b: 0.1, ask: 'Which step measures how far real clips are from your renders?', opts: [
+      { html: 'Run the tracker twice on one real clip and compare', why: 'Two runs of the same tracker agree even when both are wrong. That is repeatability, not accuracy.' },
+      { html: 'Ten times more degraded renders', why: 'More frames steady the render number. They hold the same effects, so they cannot expose one you did not model.' },
+      { html: 'Make the degraded renders look real to the eye', why: 'Looking real is a judgement, not a measurement. You still have no error number for an actual clip.' },
+      { html: 'Typodont clips with fiducial markers as an independent reference', correct: true }] },
+  ]);
+  let t = 0;
+  return {
+    concept: 'gap-measure',
+    prompt: `Suppose tip RMSE is <b>${k.a} mm</b> on clean renders and <b>${k.b} mm</b> on your degraded renders. Some gap to real clips remains. <b>${k.ask}</b>`,
+    view: [0, 12, 0, 4.4],
+    visual: st => {
+      st.draw = () => {
+        const base = 1, H = x => 2.2 * x / k.b, g = st.g;
+        st.label([.25, 4.02], 'tip RMSE', C.dim, [1, 0]); st.line([.3, base], [11.7, base], C.line, 1.5);
+        for (const [x, val, name] of [[2, k.a, 'clean'], [5.6, k.b, 'degraded']]) {
+          st.poly([[x - 1.1, base], [x + 1.1, base], [x + 1.1, base + H(val)], [x - 1.1, base + H(val)]], null, C.ghost);
+          st.label([x, base + H(val) + .36], `${val} mm`, C.fg); st.label([x, .5], name, C.dim);
+        }
+        const bx = [[8, base], [11.6, base], [11.6, base + 2.6], [8, base + 2.6]];
+        bx.forEach((p, i) => st.line(p, bx[(i + 1) % 4], t ? C.acc : C.dim, 1.5, t === 1 ? null : [5, 4]));
+        st.label([9.8, .5], 'real clips', C.dim);
+        g.globalAlpha = 1 - t; st.label([9.8, base + 1.3], '?', C.acc); g.globalAlpha = t;
+        st.label([9.8, base + 1.65], 'needs marker', C.acc); st.label([9.8, base + .95], 'ground truth', C.acc); g.globalAlpha = 1;
+      };
+    },
+    input: { type: 'choice', options: k.opts },
+    explain: 'Rendering only tests the effects you put in. What is left over (effects you did not think of, or got the strength of wrong) exists only in real clips, so it has to be measured there, against ground truth that does not come from your tracker: fiducial markers at known positions on a typodont, the next unit. The Unit 0 lab count of frames with the shank visible, dry versus under spray, is the same kind of number: only a real clip can give it. With an elastic-mounted camera there is no fixed camera-to-bur offset to borrow as truth either; the reference has to place bur and tooth frame by frame.',
+    after: st => st.animate(800, x => { t = x; }),
+  };
+};
+
+// ---- problems ----
+
+const pBlur = v => {
+  const k = pick(v, [{ f: 800, Z: 20, V: 10, t: 10 }, { f: 600, Z: 15, V: 10, t: 20 }, { f: 600, Z: 30, V: 15, t: 20 }, { f: 800, Z: 40, V: 30, t: 5 }, { f: 400, Z: 20, V: 25, t: 20 }]);
+  const sp = k.f * k.V / k.Z, ans = sp * k.t / 1000;
+  return {
+    concept: 'gap-motion-blur',
+    prompt: `The bur slides along the camera's x axis at <b>${k.V} mm/s</b>, staying <b>${k.Z} mm</b> in front of the lens. f = <b>${k.f} px</b>, exposure <b>${k.t} ms</b>. Its shank edges run vertically in the image. <b>How many px does each edge smear?</b>`,
+    input: {
+      type: 'number', answer: ans, unit: 'px',
+      why: x => eq(x, sp) ? `${sp} px/s is the image speed. The edge only travels while the shutter is open: multiply by ${k.t / 1000} s.`
+        : eq(x, k.V * k.t / 1000) ? `${fmt(k.V * k.t / 1000)} mm is how far the bur travels in space during the exposure. Convert to pixels with the pinhole scale f/Z = ${fmt(k.f / k.Z)} px per mm.`
+        : eq(x, k.f * k.V * k.t / 1000) ? 'You left out the depth. A sideways move of 1 mm at depth Z shows up as f/Z px, not f px.'
+        : eq(x, sp * k.t) ? `You multiplied px per second by milliseconds. ${k.t} ms is ${k.t / 1000} s.`
+        : eq(x, ans * 10) || eq(x, ans / 10) ? `Off by a factor of 10. Check the conversion: ${k.t} ms = ${k.t / 1000} s.`
+        : 'Two steps. Image speed from the pinhole model: f·V/Z px per second. Then blur = image speed × exposure in seconds.',
+    },
+    explain: `Pinhole: u = f·X/Z + c<sub>x</sub>, so ${k.V} mm/s sideways at depth ${k.Z} mm is ${k.f} × ${k.V} ÷ ${k.Z} = ${sp} px/s in the image. Over ${k.t / 1000} s the edge covers ${sp} × ${k.t / 1000} = <b>${ans} px</b>. Closer or faster means more blur; a shorter exposure means less.`,
+  };
+};
+
+const pSources = v => {
+  const k = pick(v, [
+    { ask: 'Your clean renders get the geometry right. <b>Which of these is in a real spray clip but missing from a clean render?</b>', opts: [
+      { html: 'The shank looking narrower when it is farther from the lens', why: 'That is perspective. The pinhole projection inside the renderer already divides by depth.' },
+      { html: 'Water droplets between the lens and the bur', correct: true },
+      { html: 'The bur\'s outline changing as the handpiece tilts', why: 'The renderer projects the mesh at whatever pose you give it, so the outline follows the tilt exactly.' },
+      { html: 'The tip landing on a different pixel when the pose changes', why: 'Pose in, pixel out is the one thing a renderer is built to do.' }] },
+    { ask: '<b>Which of these does a clean render already get right?</b>', opts: [
+      { html: 'Glare on wet enamel', why: 'A clean render lights the scene evenly. Mirror-like highlights off wet surfaces are missing unless you add them.' },
+      { html: 'Motion blur', why: 'A render is an instant: the pose is frozen, so nothing smears. A real frame collects light over the whole exposure.' },
+      { html: 'Debris and saliva on the tooth', why: 'The STL scan is a clean surface. Nothing in the render knows about debris or saliva.' },
+      { html: 'Where the bur tip projects for a given pose and K', correct: true }] },
+    { ask: 'In a real frame, one shank edge has a stretch of pure white pixels where no edge can be found. The rest of that edge is crisp. <b>Which cause fits best?</b>', opts: [
+      { html: 'Motion blur', why: 'Blur would soften the whole edge into a ramp. Here the edge is crisp except for one bleached stretch.' },
+      { html: 'A wrong focal length', why: 'A wrong focal length changes where and how large the whole shank appears. The edge would stay complete.' },
+      { html: 'Specular glare off the wet metal', correct: true },
+      { html: 'Uneven lighting', why: 'Uneven lighting changes brightness gradually along the shank. The step gets weaker in places; it is not replaced by a white patch.' }] },
+    { ask: 'In a real frame both shank edges are soft ramps about 6 px wide along their whole length. The tooth beside them is sharp. <b>Which cause fits best?</b>', opts: [
+      { html: 'The bur moved during the exposure', correct: true },
+      { html: 'Glare', why: 'Glare bleaches a local patch to white. It does not turn the full length of both edges into even ramps.' },
+      { html: 'Debris stuck to the shank', why: 'Debris makes local lumps and gaps. An even ramp along the whole of both edges is a smear.' },
+      { html: 'The tooth hiding part of the bur', why: 'Occlusion removes part of the shank from view. What stays visible would still have crisp edges.' }] },
+  ]);
+  return {
+    concept: 'gap-sources', prompt: k.ask, input: { type: 'choice', options: k.opts },
+    explain: 'A clean render gets geometry right: pose, projection, outline. It leaves out what the mouth does to the image: spray and droplets, motion blur, glare on wet enamel and metal, debris and saliva, uneven lighting, the tooth hiding part of the bur. Blur widens an edge, glare breaks it, spray and occlusion hide it.',
+  };
+};
+
+const pDegrade = v => {
+  const k = pick(v, [
+    { prompt: 'No real clips yet. You want to know at what blur length your edge fit breaks down. <b>Which experiment answers that in mm of tip error?</b>', input: { type: 'choice', options: [
+      { html: 'Render 1000 more clean frames from new poses', why: 'None of them contains blur, so they cannot show what blur does to the fit.' },
+      { html: 'Blur the renders and judge the overlays by eye', why: 'You have exact ground truth for every blurred frame. Looking throws it away and gives no number.' },
+      { html: 'Blur renders by 0, 2, 4 and 8 px; score each set against the known poses', correct: true },
+      { html: 'None. Blur only exists in real clips.', why: 'Blur is a smear of speed × exposure pixels. You can apply it to a render yourself.' }] } },
+    { prompt: 'Pooled saliva might upset your tooth registration, the other half of the pipeline. No real data yet. <b>How do you test it with exact ground truth?</b>', input: { type: 'choice', options: [
+      { html: 'Render the tooth at known poses, paint glossy blobs on the images, compare registration error with and without', correct: true },
+      { html: 'Shift the tooth mesh by a random, unrecorded amount, then render', why: 'An unrecorded shift destroys the one thing a render gives you: a known pose to compare against.' },
+      { html: 'Clean renders only. Saliva cannot be rendered.', why: 'It does not have to be physically exact. A glossy blob on the image already tests whether the method survives a patch of missing detail.' },
+      { html: 'Photograph a wet tooth and check the result by eye', why: 'A photo has real saliva but no known pose, and looking gives no number. You asked for exact ground truth.' }] } },
+    (() => { const n = 300, c = 80; return { prompt: `You add droplets to <b>${n}</b> rendered frames. Suppose a droplet covers the bur tip in <b>${c}</b> of them. <b>For how many frames do you still know the true tip position exactly?</b>`, input: { type: 'number', answer: n,
+      why: x => eq(x, n - c) ? `You dropped the ${c} frames where the tip is covered. The tracker cannot see the tip there, but you chose every pose, so you still know where it is.`
+        : eq(x, c) ? `Those ${c} are the frames where the tip is hidden from the camera. Hidden from the camera is not unknown to you, and the other ${n - c} are known too.`
+        : 'Droplets were painted onto pixels. Ask what happened to the list of poses the frames were rendered from.' } }; })(),
+    { prompt: 'Suppose tip RMSE on renders is 0.05 mm clean and 0.4 mm after you add glare blobs. Same poses, same tracker. <b>What does exact ground truth let you say?</b>', input: { type: 'choice', options: [
+      { html: 'The ground truth got less accurate under glare', why: 'Ground truth is the list of poses you rendered from. Glare was added to pixels, not to poses.' },
+      { html: 'Real clips will score 0.4 mm', why: 'This isolates one effect, on renders. Real clips mix many effects at strengths you have not measured.' },
+      { html: 'Nothing. The two numbers cannot be compared.', why: 'They can, because everything except the glare is identical: same poses, same tracker, same exact truth.' },
+      { html: 'Glare caused the rise: it is the only thing that changed', correct: true }] } },
+  ]);
+  return { concept: 'gap-degrade', ...k, explain: 'Degradations change pixels, not poses. Every blurred, glared or droplet-covered render still has the exact pose it was made from, so you can turn one effect up at a time and read its cost in mm before any real data exists.' };
+};
+
+const pUpper = v => {
+  const k = pick(v, [
+    { ask: 'Suppose tip RMSE is <b>0.04 mm</b> on clean renders and <b>0.1 mm</b> on degraded renders. No real clip has been scored. <b>Which line belongs in the report?</b>', opts: [
+      { html: 'Tip RMSE: 0.04 mm', why: 'That is the best case presented as the result. A reader will take it as accuracy on real clips, which nobody has measured.' },
+      { html: 'Tip RMSE: 0.07 mm (mean of the two)', why: 'Averaging mixes two test conditions into a number that describes neither, and still says nothing about real clips.' },
+      { html: 'Clean 0.04 mm, degraded 0.1 mm, real: not yet measured', correct: true },
+      { html: 'Real clips: about 0.1 mm', why: 'Degraded renders hold only the effects you added, at strengths you chose. They are a harder test than clean renders, not a measurement of real clips.' }] },
+    { ask: 'Suppose robot training data needs tip error under <b>0.1 mm</b>, and your tracker scores <b>0.15 mm</b> on clean renders. <b>What does that say about real clips?</b>', opts: [
+      { html: 'Nothing. Renders and real clips are unrelated.', why: 'They are related in one direction: a real clip has everything a clean render has, plus blur, glare and spray. Failing the easy case settles the hard one.' },
+      { html: 'It will miss the requirement there too', correct: true },
+      { html: 'It may pass: real images carry more detail', why: 'What a real clip adds is blur, glare, spray and debris. All of it damages the edges the tracker fits; none of it helps.' },
+      { html: 'It will score about 0.15 mm there', why: 'Clean renders are the best case, so 0.15 mm is a floor for real clips, not an estimate. The real number is at least that, by an unknown amount.' }] },
+    { ask: 'Suppose robot training data needs tip error under <b>0.1 mm</b>, and your tracker scores <b>0.03 mm</b> on clean renders. <b>What does that say about real clips?</b>', opts: [
+      { html: 'It passes there with 0.07 mm to spare', why: 'That margin was measured where every edge is crisp. Real clips eat into it by an amount no render reveals.' },
+      { html: 'It will fail there', why: 'Too strong. Real clips are harder, but you do not know by how much. The clean score sets a floor, not a verdict.' },
+      { html: 'It will score about 0.03 mm there', why: 'Clean renders are the best case. 0.03 mm is the least the real error can be, not what it will be.' },
+      { html: 'Only that the method is not already failing in the best case', correct: true }] },
+    { ask: 'You tune an edge threshold until tip error on clean renders stops falling. <b>How will the tuned value most likely do on real clips?</b>', opts: [
+      { html: 'Worse: it was fitted to crisp edges that real frames do not have', correct: true },
+      { html: 'Just as well: the tuning found the best value', why: 'Best for crisp, evenly lit edges. The tuning never saw a blurred, bleached or half-hidden edge, so it had no reason to cope with one.' },
+      { html: 'Better: a real clip has more frames to average over', why: 'More frames average out random noise. They do not undo a threshold that fails the same way on every blurred edge.' },
+      { html: 'Nothing at all can be said', why: 'The direction is known: real clips add difficulty and remove none. Only the size of the drop is unknown.' }] },
+  ]);
+  return {
+    concept: 'gap-upper-bound', prompt: k.ask, input: { type: 'choice', options: k.opts },
+    explain: 'A clean render is the best case: every edge crisp, evenly lit, fully visible. Its score is a floor for real clips, not a forecast. Failing it settles the matter; passing it does not. Report clean, degraded and real numbers separately, and say so when one is still missing.',
+  };
+};
+
+const pMeasure = v => {
+  const k = pick(v, [
+    { ask: 'Suppose degraded renders give 0.1 mm tip RMSE. <b>Which experiment measures what your degradations still miss?</b>', opts: [
+      { html: 'Ten times more degraded renders', why: 'More frames steady the render number. They hold the same effects, so they cannot reveal a missing one.' },
+      { html: 'Run the tracker twice on one real clip and compare the runs', why: 'Two runs of the same tracker agree even when both are wrong. That measures repeatability, not error.' },
+      { html: 'A typodont clip with fiducial markers, scored against the marker poses', correct: true },
+      { html: 'Add one more kind of degradation', why: 'That tests one more effect you thought of. The gap is whatever you have not thought of, or got the strength of wrong.' }] },
+    { ask: 'A clinical clip of a real patient has no markers. <b>Why can it not give your tracker\'s tip error in mm?</b>', opts: [
+      { html: 'Real clips are too blurred to track', why: 'Many frames track fine. The trouble is not running the tracker; it is having nothing to compare its answer with.' },
+      { html: 'There is no independent measurement of the true pose', correct: true },
+      { html: 'Tip error is only defined for renders', why: 'Tip error is the distance between the estimated and the true tip. It is defined wherever the true tip is known by other means.' },
+      { html: 'K is unknown for real clips', why: 'K comes from your calibration of the real camera. It is the true pose that is missing.' }] },
+    { ask: '<b>Which of these numbers can only come from a real clip?</b>', opts: [
+      { html: 'Tip error on renders with 8 px of added blur', why: 'That is a degraded-render number: you add the blur yourself and score against the known poses.' },
+      { html: 'Blur length for a given image speed and exposure', why: 'That is arithmetic: speed × exposure. No clip needed.' },
+      { html: 'Rendered tip versus projected ground truth, max error', why: 'That is this unit\'s lab number. Both sides of it come from the renderer and the camera model.' },
+      { html: 'The fraction of frames in which spray hides the shank', correct: true }] },
+    { ask: 'Ground truth for a real clip must not depend on your tracker. <b>Which one qualifies?</b>', opts: [
+      { html: 'Poses solved from markers at known positions on the typodont', correct: true },
+      { html: 'The tracker\'s own trajectory, smoothed', why: 'Smoothing removes jitter but keeps any error the tracker makes consistently. It is still the tracker marking its own work.' },
+      { html: 'A render made from the tracker\'s output pose', why: 'That render agrees with the tracker by construction. Comparing the two is circular.' },
+      { html: 'The same tracker run at a higher resolution', why: 'Both runs share the same edge model and the same blind spots. Agreement between them is not accuracy.' }] },
+  ]);
+  return {
+    concept: 'gap-measure', prompt: k.ask, input: { type: 'choice', options: k.opts },
+    explain: 'Renders only test effects you put in. What they miss exists only in real clips, so it must be measured there, against ground truth that does not come from the tracker: fiducial markers at known positions on a typodont, the next unit. The Unit 0 lab count of frames with the shank visible, dry versus under spray, is the same kind of number. More rendering never produces it.',
+  };
+};
+
+Reps.lesson({
+  id: 'u3-sim-gap',
+  title: 'Where renders differ from real clips',
+  learn: [edgeEffects, smear, degrade, tuned, thirdBar],
+  problems: [pBlur, pSources, pDegrade, pUpper, pMeasure],
+});
+</script>
+</body>
+</html>

@@ -21,6 +21,9 @@
     {"id": "u2-pinhole", "unit": 2, "title": "The pinhole camera", "minutes": 9, "prerequisites": ["u1-se3"], "path": "u2-pinhole.html", "concepts": ["pin-similar-triangles", "pin-depth-scale", "pin-focal", "pin-principal", "pin-ray"]},
     {"id": "u2-extrinsics", "unit": 2, "title": "From world to pixel", "minutes": 10, "prerequisites": ["u2-pinhole"], "path": "u2-extrinsics.html", "concepts": ["ext-world-to-cam", "ext-order", "ext-behind", "ext-k-matrix", "ext-camera-moves"]},
     {"id": "u2-distortion", "unit": 2, "title": "Lens distortion", "minutes": 9, "prerequisites": ["u2-extrinsics"], "path": "u2-distortion.html", "concepts": ["dist-radial", "dist-barrel", "dist-model", "dist-lines", "dist-undistort-first"]},
-    {"id": "u2-calibration", "unit": 2, "title": "Calibrating the camera", "minutes": 10, "prerequisites": ["u2-distortion"], "path": "u2-calibration.html", "concepts": ["cal-reprojection", "cal-rms", "cal-unknowns", "cal-coverage", "cal-judge"]}
+    {"id": "u2-calibration", "unit": 2, "title": "Calibrating the camera", "minutes": 10, "prerequisites": ["u2-distortion"], "path": "u2-calibration.html", "concepts": ["cal-reprojection", "cal-rms", "cal-unknowns", "cal-coverage", "cal-judge"]},
+    {"id": "u3-render-loop", "unit": 3, "title": "Rendering is projection", "minutes": 9, "prerequisites": ["u2-calibration"], "path": "u3-render-loop.html", "concepts": ["ren-forward", "ren-inputs", "ren-occlusion", "ren-silhouette", "ren-units"]},
+    {"id": "u3-ground-truth", "unit": 3, "title": "Ground truth for free", "minutes": 9, "prerequisites": ["u3-render-loop"], "path": "u3-ground-truth.html", "concepts": ["gt-known-pose", "gt-tip-error", "gt-axis-error", "gt-project-check", "gt-summary"]},
+    {"id": "u3-sim-gap", "unit": 3, "title": "Where renders differ from real clips", "minutes": 9, "prerequisites": ["u3-ground-truth"], "path": "u3-sim-gap.html", "concepts": ["gap-sources", "gap-motion-blur", "gap-degrade", "gap-upper-bound", "gap-measure"]}
   ]
 }
