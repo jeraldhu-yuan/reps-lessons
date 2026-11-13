@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<link rel="stylesheet" href="shared/reps.css">
+<script src="shared/reps.js"></script>
+</head>
+<body>
+<script>
+const { C, rad, fmt, pick } = Reps;
+// Camera frame: x right, y down, z forward. Pixels: u right, v down, principal point (320, 240) in a 640 x 480 image.
+const CX = 320, CY = 240;
+const W = ([u, v]) => [u, -v];                        // pixel (v down) -> stage (y up)
+const near = (a, b) => Math.abs(a - b) < 0.006;
+const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+const rmsOf = e => Math.sqrt(e.reduce((s, x) => s + x * x, 0) / e.length);
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+// board corners in board coordinates (mm), centred: 6 x 5 corners, 5 mm apart
+const B = Array.from({ length: 30 }, (_, i) => [(i % 6 - 2.5) * 5, (Math.floor(i / 6) - 2) * 5]);
+// pose [Z0, th, tx, ty]: board turned by th about the camera's y axis, its centre at (tx, ty, Z0) mm
+const proj = (f, [x, y], [Z0, th, tx, ty = 0]) => { const Z = Z0 + x * Math.sin(th); return [f * (x * Math.cos(th) + tx) / Z + CX, f * (y + ty) / Z + CY]; };
+const errs = (P, D) => P.map((p, i) => dist(p, D[i]));
+
+const det3 = m => m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+// the board pose [Z0, th, tx] that best explains detections D at focal length f (Gauss-Newton from p)
+const refit = (f, D, p) => {
+  const res = q => B.flatMap((b, i) => { const [u, v] = proj(f, b, q); return [u - D[i][0], v - D[i][1]]; });
+  for (let it = 0; it < 15; it++) {
+    const r = res(p), J = p.map((_, j) => { const q = [...p]; q[j] += 1e-5; return res(q).map((x, i) => (x - r[i]) / 1e-5); });
+    const A = J.map((a, i) => J.map((b, j) => a.reduce((s, x, n) => s + x * b[n], 0) * (i === j ? 1.0001 : 1)));
+    const g = J.map(a => -a.reduce((s, x, n) => s + x * r[n], 0)), d = det3(A);
+    p = p.map((x, j) => x + det3(A.map((row, i) => row.map((y, n) => n === j ? g[i] : y))) / d);
+  }
+  return p;
+};
+
+// the image rectangle with its principal point, at horizontal offset x0
+const image = (st, x0 = 0) => {
+  st.poly([[x0, 0], [x0 + 640, 0], [x0 + 640, -480], [x0, -480]], C.ghost, 'rgba(255,255,255,.03)', 1);
+  st.line([x0 + CX - 9, -CY], [x0 + CX + 9, -CY], C.ghost, 1); st.line([x0 + CX, -CY - 9], [x0 + CX, -CY + 9], C.ghost, 1);
+};
+// detected corners (white dots), predicted corners (yellow rings), and the error between them:
+// an arrow at true length, or (k > 1) a plain line drawn k times too long so sub-pixel misfits show
+const corners = (st, D, P, k = 1, r = 3.5) => D.forEach((d, i) => {
+  const e = [d[0] + (P[i][0] - d[0]) * k, d[1] + (P[i][1] - d[1]) * k];
+  if (k === 1) st.arrow(W(d), W(e), C.acc, 1.5); else st.line(W(d), W(e), C.acc, 2);
+  st.ring(W(P[i]), C.acc, r + 2); st.dot(W(d), C.fg, null, r);
+});
+
+// ---- learn ----
+
+const fitHand = v => {
+  const k = pick(v, [{ ft: 520, f0: 440, pose: [32, rad(30), 2, -1] }, { ft: 480, f0: 570, pose: [30, rad(-25), -1, 1] }, { ft: 560, f0: 475, pose: [34, rad(35), 1, 1] }]);
+  const D = B.map((b, i) => { const p = proj(k.ft, b, k.pose); return [p[0] + 0.4 * Math.sin(12.9898 * i + 1), p[1] + 0.4 * Math.sin(78.233 * i + 2)]; });   // detections carry a little noise
+  const at = f => rmsOf(errs(B.map(b => proj(f, b, k.pose)), D));
+  let best = 380; for (let f = 380; f <= 660; f += 5) if (at(f) < at(best)) best = f;
+  let f = k.f0, x0 = 0, fs = f, shown = false;
+  return {
+    concept: 'cal-reprojection',
+    prompt: `A checkerboard held in front of the intraoral camera. <b>White dots</b>: corners the detector found. <span class="ca">Yellow rings</span>: where your camera model says they should be. <b>Drag sideways to change the model's focal length until the arrows are as short as they get.</b>`,
+    view: [-10, 650, -540, 10],
+    visual: st => {
+      st.draw = () => {
+        image(st); corners(st, D, B.map(b => proj(f, b, k.pose)));
+        st.line([70, -512], [570, -512], C.line, 4); st.dot([70 + 500 * (f - 380) / 280, -512], C.acc, null, 8); st.label([40, -512], 'f', C.dim);
+        st.readout(`model f = ${f} px &nbsp; RMS error = ${at(f).toFixed(2)} px` + (shown ? `<br><span class="ca">lowest possible: ${at(best).toFixed(2)} px, at f = ${best} px</span>` : ''));
+      };
+      st.drag((w, ph) => { if (ph === 'down') { x0 = w[0]; fs = f; } else f = clamp(Math.round((fs + (w[0] - x0) * 0.27) / 5) * 5, 380, 660); });
+    },
+    input: {
+      type: 'custom',
+      check: () => ({ correct: f === best, why: `The error readout is ${at(f).toFixed(2)} px and can still go lower. The rings sit ${f > best ? 'farther from' : 'closer to'} the image centre than the dots: the model magnifies too ${f > best ? 'much, so its focal length is too long. Drag left.' : 'little, so its focal length is too short. Drag right.'}` }),
+      solve: wrong => { f = wrong ? best + 40 : best; },
+    },
+    explain: `Each arrow is a <b>reprojection error</b>: the pixel distance between where a corner was <i>detected</i> and where the current model (intrinsics, distortion, board pose) <i>projects</i> it. The dots are measurements and never move; only the model can. You tuned one parameter by hand. Calibration is an optimiser tuning all of them at once, the same way. The leftover ${at(best).toFixed(2)} px is detector noise: no focal length removes it.`,
+    after: st => { shown = true; st.redraw(); },
+  };
+};
+
+// names the slip behind a wrong RMS; e = the errors, s = their unit in px
+const rmsWhy = (e, s, x) => {
+  const n = e.length, sq = e.reduce((a, b) => a + b * b, 0), mean = e.reduce((a, b) => a + b, 0) / n;
+  return near(x, mean * s) && !near(mean, Math.sqrt(sq / n)) ? 'That is the plain mean of the errors, not the root mean square. RMS averages the <i>squares</i> and then takes the root, so large errors count for more.'
+    : near(x, sq / n * s * s) ? 'That is the mean of the squares. One step is left: take its square root, which brings the unit back to pixels.'
+    : near(x, sq * s * s) ? 'That is the sum of the squares. Divide by the number of corners, then take the square root.'
+    : near(x, Math.sqrt(sq) * s) ? 'You took the root of the <i>sum</i> of squares. Divide by the number of corners first: it is the root of the <i>mean</i> square.'
+    : near(x, Math.max(...e) * s) ? 'That is the largest single error. The RMS is pulled toward it but is still an average over every corner.'
+    : 'Three steps: square each error, average the squares (add them up, divide by how many), then take the square root.';
+};
+
+const rmsStep = v => {
+  const e = pick(v, [[1, 1, 3, 5], [1, 5, 5, 7], [2, 2, 6, 10], [1, 1, 7, 7]]), ans = rmsOf(e), gap = 0.7;
+  const xs = e.map((_, i) => e.slice(0, i).reduce((a, b) => a + b + gap, 0)), wid = xs[3] + e[3], top = Math.max(...e);
+  let shown = false;
+  return {
+    concept: 'cal-rms',
+    prompt: `Four corners have reprojection errors <b>${e.join(', ')} px</b>. Calibration reports one number for them, the root mean square: square each error (${e.map(x => x * x).join(', ')}), average the squares, take the square root. <b>What is the RMS, in px?</b>`,
+    view: [-0.6, wid + 0.6, -top * 0.22 - 0.5, top * 1.2 + 0.5],
+    visual: st => {
+      st.draw = () => e.forEach((s, i) => {
+        const x = xs[i], sq = a => [[x, 0], [x + a, 0], [x + a, a], [x, a]];
+        st.poly(sq(s), C.fg, 'rgba(255,255,255,.08)');
+        st.label([x + s / 2, 0], s + ' px', C.fg, [0, 13]); st.label([x + s / 2, s], 'area ' + s * s, C.dim, [0, -11]);
+        if (shown && i === 3) { st.poly(sq(ans), C.acc, 'rgba(255,212,59,.12)', 2.5); st.label([x + ans / 2, ans / 2], 'mean ' + ans * ans, C.acc); }
+      });
+    },
+    input: { type: 'number', answer: ans, unit: 'px', why: x => rmsWhy(e, 1, x) },
+    explain: `Mean of the squares: ${e.reduce((a, b) => a + b * b, 0)} / 4 = ${ans * ans}. Root: <b>${ans} px</b>. The yellow square has that mean area; its side is the RMS. Squaring makes large errors count for more: the plain mean here is only ${fmt(e.reduce((a, b) => a + b, 0) / 4)}. The number calibration software prints is this, taken over every corner in every view.`,
+    after: st => { shown = true; st.redraw(); },
+  };
+};
+
+const unknowns = v => {
+  const poses = [[34, rad(-35), 0, 0], [30, rad(10), 3, -1], [36, rad(40), -2, 2]];
+  const k = pick(v, [
+    { ask: 'Which of these does it have to solve <b>separately for each photo</b>?', opts: [
+      { html: 'The focal length and principal point', why: 'Those belong to the camera, and the camera is the same in every photo. One K is shared by all views, which is what lets the views constrain each other.' },
+      { html: 'The pose of the board relative to the camera', correct: true },
+      { html: 'The distortion coefficient k₁', why: 'Distortion is a property of the lens, and the lens did not change between photos. One k₁ serves all of them.' },
+      { html: 'The spacing between board corners', why: 'That is the one thing you know going in: you printed the board with 5 mm squares. It is an input, not something to solve for.' }] },
+    { ask: 'Which of these is <b>not solved for</b>, because you hand it to the optimiser?', opts: [
+      { html: 'The spacing between board corners', correct: true },
+      { html: 'The pose of the board in each photo', why: 'Nobody measured how you held the board. Each photo\'s pose is unknown: 6 numbers per view that the optimiser has to find.' },
+      { html: 'The focal length and principal point', why: 'Those are what you are calibrating for. They start as a rough guess and the optimiser refines them.' },
+      { html: 'The distortion coefficient k₁', why: 'You do not know the lens\'s k₁ in advance. The optimiser finds it from how the corner pattern bends.' }] },
+    { ask: 'Which of these is solved <b>once and shared by all three photos</b>?', opts: [
+      { html: 'The pose of the board', why: 'You moved the board between shots, so each photo has its own pose: three photos, three unknown poses.' },
+      { html: 'The detected corner pixels', why: 'Those are the measurements. They come from the detector, differ in every photo, and are never solved for.' },
+      { html: 'The spacing between board corners', why: 'Shared, yes, but not solved: you know it (5 mm) and hand it to the optimiser.' },
+      { html: 'K and the distortion coefficient k₁', correct: true }] },
+  ]);
+  let shown = false;
+  return {
+    concept: 'cal-unknowns',
+    prompt: `Three photos of one board (5 mm squares), moved between shots, same camera. The optimiser must make the model reproduce every detected corner. ${k.ask}`,
+    view: [-20, 2060, -640, 20],
+    visual: st => {
+      st.draw = () => poses.forEach((p, i) => {
+        image(st, i * 700); B.forEach(b => { const [u, w] = proj(500, b, p); st.dot([i * 700 + u, -w], C.fg, null, 2); });
+        st.label([i * 700 + 320, -560], shown ? `pose ${i + 1}: R${'₁₂₃'[i]}, t${'₁₂₃'[i]}` : `photo ${i + 1}`, shown ? C.acc : C.dim);
+      });
+    },
+    input: { type: 'choice', options: k.opts },
+    explain: `Calibration solves for <b>one K and one set of distortion coefficients</b>, shared because it is the same camera in every view, plus <b>one board pose per view</b> (6 numbers each: 3 for rotation, 3 for position). Known: the corner spacing, which is what puts millimetres into the result. You keep K and k₁ and throw the poses away. None of this is a camera-to-bur offset: the mount is elastic, so there is none to find.`,
+    after: st => { shown = true; st.redraw(); },
+  };
+};
+
+const FT = 500, Z0 = 30;
+const coverage = v => {
+  const k = pick(v, [
+    { f0: 400, ask: 'Which f fits the dots best?', opts: [
+      { html: 'Only one f: the RMS has a single lowest point', why: 'Drag again and watch the RMS line: it reads 0.00 px at every f. What changes instead is the fitted board distance.' },
+      { html: 'Every f fits equally well', correct: true },
+      { html: 'The longest f', why: 'The RMS reads 0.00 px there, and 0.00 px at the shortest f as well. Nothing in this view separates them.' },
+      { html: 'None: no f gets the RMS near zero', why: 'The RMS reads 0.00 px all the way across. Every f is a perfect fit, and that is the problem.' }] },
+    { f0: 620, ask: 'As f goes up, how does the optimiser keep the rings on the dots?', opts: [
+      { html: 'It moves the board closer', why: 'A longer f magnifies. To cancel that the board must look smaller, so it has to go farther away. Watch the top view as you drag.' },
+      { html: 'It tilts the board', why: 'In the top view the fitted board stays square-on at every f. Only its distance changes.' },
+      { html: 'It moves the board farther away, in proportion', correct: true },
+      { html: 'It cannot: the fit gets worse', why: 'The RMS reads 0.00 px at every f. The optimiser always finds a board pose that fits perfectly.' }] },
+  ]);
+  let f = k.f0, th = 0, x0 = 0, fs = f;
+  return {
+    concept: 'cal-coverage',
+    prompt: `New photo: the board faces the camera squarely. Now the optimiser re-fits the board's pose for every focal length you try. <b>Drag sideways to change f</b> and watch the RMS. <b>${k.ask}</b>`,
+    view: [-10, 1010, -500, 20],
+    visual: st => {
+      st.draw = () => {
+        const D = B.map(b => proj(FT, b, [Z0, th, 0])), p = refit(f, D, [Z0 * f / FT, th, 0]), P = B.map(b => proj(f, b, p));
+        image(st); corners(st, D, P, 10, 2.5);
+        // top view: camera at the bottom looking up, the fitted board, the field of view
+        const o = [845, -462], m = 9.6, tv = (x, z) => [o[0] + m * x, o[1] + m * z], ze = Math.min(46, 150 / m * f / 320);
+        st.label([845, -12], 'top view', C.dim); st.line(o, tv(0, 46), C.line, 1, [4, 4]);
+        st.line(o, tv(ze * 320 / f, ze), C.ghost, 1.5); st.line(o, tv(-ze * 320 / f, ze), C.ghost, 1.5); st.dot(o, C.fg, null, 4);
+        st.line(tv(-12.5 * Math.cos(p[1]) + p[2], p[0] - 12.5 * Math.sin(p[1])), tv(12.5 * Math.cos(p[1]) + p[2], p[0] + 12.5 * Math.sin(p[1])), C.acc, 4);
+        st.readout(`<div style="margin-bottom:14px">f = ${f} px &nbsp; fitted board at ${p[0].toFixed(1)} mm<br>RMS error = ${rmsOf(errs(P, D)).toFixed(2)} px${th ? ' (error lines ×10)' : ''}</div>`);
+      };
+      st.drag((w, ph) => { if (ph === 'down') { x0 = w[0]; fs = f; } else f = clamp(Math.round((fs + (w[0] - x0) * 0.4) / 10) * 10, 300, 700); });
+    },
+    input: { type: 'choice', options: k.opts },
+    explain: `u = f·X/Z + c<sub>x</sub>. With a square-on board every corner has the same Z, so scaling f and Z together gives the identical image: a long lens far away or a short lens up close. Square-on views cannot pin the focal length. <b>The board is now tilted: drag again.</b> Near and far edges sit at different depths, and only f = ${FT} px fits both. So tilt the board in your views, and push it out to the image corners too: distortion is zero at the centre and only shows out there.`,
+    after: st => st.animate(1100, t => { th = rad(40) * t; }),
+  };
+};
+
+const judge = v => {
+  const k = pick(v, [{ fw: 600, own: 0.2 }, { fw: 410, own: 0.3 }, { fw: 580, own: 0.2 }]);
+  const D = B.map(b => proj(FT, b, [Z0, rad(40), 0])), P = B.map(b => proj(k.fw, b, refit(k.fw, D, [Z0 * k.fw / FT, rad(40), 0])));
+  const r = rmsOf(errs(P, D)).toFixed(1), pct = Math.round(Math.abs(k.fw / FT - 1) * 100), dir = k.fw > FT ? 'long' : 'short';
+  const opts = pick(v, [
+    { ask: 'What do you conclude?', opts: [
+      { html: `It is good: ${k.own} px is well under a pixel`, why: `The ${k.own} px was measured on the very views the optimiser tuned itself to. It shows the model fits those views, not that it is right. The new view is the test.` },
+      { html: 'The new photo\'s corners are noisier', why: `Same camera, same board, same detector: detection noise is a few tenths of a pixel in every photo. And look at the error lines: they form a pattern. Noise would point every which way.` },
+      { html: 'K is wrong. Redo it with tilted views', correct: true },
+      { html: 'Average the two numbers and accept it', why: `Averaging hides the one result that tested the model. And the average would be over a pixel, where a good calibration is well under 1 px on views it has not seen.` }] },
+    { ask: 'Which number tells you whether to trust K?', opts: [
+      { html: `${r} px, from the view it never saw`, correct: true },
+      { html: `${k.own} px: it comes from more views`, why: `More views of the same kind do not help. The optimiser chose its parameters to make exactly that number small, so it cannot also be the test of them.` },
+      { html: 'Neither. RMS says nothing about K', why: `On unseen views it says a lot: with K frozen, a new tilted view only comes in under a pixel if K is right.` },
+      { html: 'Whichever is lower', why: `The lower one is the number the optimiser was allowed to shrink. The test is the view it had no chance to adapt K to.` }] },
+  ]);
+  return {
+    concept: 'cal-judge',
+    prompt: `A calibration fitted on 12 square-on views reports <b>RMS ${k.own} px</b>. Here is a new, tilted view it never saw. K is frozen; only the board pose is re-fitted. RMS on this view: <b>${r} px</b>. <b>${opts.ask}</b>`,
+    view: [-250, 890, -490, 10],
+    visual: st => { st.draw = () => { image(st); corners(st, D, P, 10, 3); st.label([-125, -205], 'errors', C.dim); st.label([-125, -270], 'drawn', C.dim); st.label([-125, -335], '×10', C.dim); }; },
+    input: { type: 'choice', options: opts.opts },
+    explain: `A low RMS is <b>necessary, not sufficient</b>. Square-on views cannot see f, so this calibration fit them to ${k.own} px with a focal length ${pct}% too ${dir}. Judge a calibration on views it did not see: a good one stays <b>well under 1 px</b> there too. Every later millimetre inherits the error. Bur depth from shank width is Z = f·W/w, so an f that is ${pct}% ${dir} reports every depth ${pct}% ${dir}: ${fmt(Z0 * pct / 100)} mm at ${Z0} mm. Tooth registration inherits it the same way.`,
+  };
+};
+
+// ---- problems ----
+
+const pReproj = v => {
+  const k = pick(v, [
+    { X: [6, -3, 30], f: 500, d: [-3, 4] }, { X: [-4, 8, 40], f: 600, d: [6, -8] }, { X: [5, 5, 25], f: 400, d: [4, -3] },
+    { X: [-9, 3, 30], f: 700, d: [5, 12] }, { X: [2, -6, 20], f: 450, d: [-8, 6] },
+  ]);
+  const [X, Y, Z] = k.X, p = [k.f * X / Z + CX, k.f * Y / Z + CY], det = [p[0] + k.d[0], p[1] + k.d[1]], ans = Math.hypot(...k.d), a = k.d.map(Math.abs), neg = n => n < 0 ? `(−${-n})` : n;
+  return {
+    concept: 'cal-reprojection',
+    prompt: `The model puts a board corner at <b>(X, Y, Z) = (${k.X.map(n => n < 0 ? '−' + -n : n).join(', ')}) mm</b> in the camera frame, with f = ${k.f} px, principal point (${CX}, ${CY}), no distortion. The detector found that corner at pixel <b>(${det.join(', ')})</b>. <b>What is its reprojection error, in px?</b>`,
+    input: {
+      type: 'number', answer: ans, unit: 'px',
+      why: x => near(x, a[0] + a[1]) ? `That adds the ${a[0]} px across to the ${a[1]} px down. The error is the straight-line distance between the two pixels, not the walk around the corner.`
+        : near(x, a[0]) || near(x, a[1]) ? `That is only the ${near(x, a[0]) ? 'u' : 'v'} part of the offset. The error is the full distance: combine both parts with Pythagoras.`
+        : near(x, ans * ans) ? 'That is the squared distance. Take the square root to get pixels.'
+        : near(x, dist(det, [k.f * X / Z, k.f * Y / Z])) ? 'You left the principal point out of the prediction: u = f·X/Z + c<sub>x</sub>, v = f·Y/Z + c<sub>y</sub>.'
+        : 'Two steps. Project the corner with the model (u = f·X/Z + c<sub>x</sub>, v = f·Y/Z + c<sub>y</sub>), then take the straight-line pixel distance from that prediction to the detection.',
+    },
+    explain: `Predicted pixel: u = ${k.f}·${neg(X)}/${Z} + ${CX} = ${p[0]}, v = ${k.f}·${neg(Y)}/${Z} + ${CY} = ${p[1]}. The detection is ${a[0]} px away in u and ${a[1]} px in v, so the reprojection error is √(${a[0]}² + ${a[1]}²) = <b>${ans} px</b>.`,
+  };
+};
+
+const pUnknowns = v => {
+  const n = pick(v, [8, 10, 12, 15, 20]), ans = 4 + 6 * n;
+  return {
+    concept: 'cal-unknowns',
+    prompt: `Your camera model has a focal length f, a principal point (c<sub>x</sub>, c<sub>y</sub>) and one distortion coefficient k₁. You calibrate from <b>${n} views</b> of a board with known 5 mm squares. <b>How many unknown numbers does the optimiser solve for?</b>`,
+    input: {
+      type: 'number', answer: ans,
+      why: x => x === 10 ? 'That is the camera\'s 4 numbers plus a single board pose. Each of the views has its own pose.'
+        : x === 4 ? 'Those are only the shared camera numbers. Nobody measured how the board was held, so every view adds an unknown pose.'
+        : x === 6 * n ? 'Those are the board poses. The camera\'s own numbers (f, c<sub>x</sub>, c<sub>y</sub>, k₁) are unknown too: they are the reason for calibrating.'
+        : x === 10 * n ? 'You gave every view its own camera. It is one camera: f, c<sub>x</sub>, c<sub>y</sub> and k₁ are counted once and shared.'
+        : x === ans + 1 ? 'One too many. The square size is known (5 mm): it is an input, not an unknown.'
+        : x === 3 + 6 * n ? 'One short: the distortion coefficient k₁ is solved for as well.'
+        : x === 4 + n ? 'A pose is not one number. It takes 6: 3 for the rotation and 3 for the position.'
+        : x === 4 + 3 * n ? 'A pose has a rotation as well as a position: 3 numbers each, 6 per view.'
+        : x === 4 + 12 * n ? 'A rotation matrix has 9 entries but only 3 degrees of freedom. A pose is 6 numbers, not 12.'
+        : 'Count the shared camera numbers once (f, c<sub>x</sub>, c<sub>y</sub>, k₁), then add 6 for each view\'s board pose (3 rotation, 3 position). The square size is known.',
+    },
+    explain: `Shared by every view: f, c<sub>x</sub>, c<sub>y</sub>, k₁ = 4. Per view: one board pose, 6 numbers. Total 4 + 6·${n} = <b>${ans}</b>. The 5 mm spacing is known and is what sets the scale. Against these unknowns stand 2 measured numbers (u and v) for every detected corner.`,
+  };
+};
+
+const pRms = v => {
+  const e = pick(v, [[1, 1, 7, 7], [2, 2, 6, 10], [1, 5, 5, 7], [2, 2, 14, 14], [3, 3, 9, 15], [1, 3, 3, 9]]), ans = rmsOf(e) / 10, t = x => fmt(x / 10);
+  return {
+    concept: 'cal-rms',
+    prompt: `A calibration used two views with two corners each. Reprojection errors, view 1: <b>${t(e[0])} and ${t(e[1])} px</b>. View 2: <b>${t(e[2])} and ${t(e[3])} px</b>. <b>What RMS does it report, in px?</b>`,
+    input: { type: 'number', answer: ans, unit: 'px', why: x => rmsWhy(e, 0.1, x) },
+    explain: `Squares: ${e.map(x => fmt(x * x / 100)).join(', ')}. Their mean is ${fmt(e.reduce((a, b) => a + b * b, 0) / 100)} / 4 = ${fmt(ans * ans)}, and the root is <b>${fmt(ans)} px</b>. One RMS covers all corners in all views together. The plain mean would be ${fmt(e.reduce((a, b) => a + b, 0) / 40)} px: squaring lets the worse view pull the number up.`,
+  };
+};
+
+const pCoverage = v => {
+  const f = 400, k1 = -0.25;
+  const tap = (us, vs) => {
+    const pts = vs.flatMap(w => us.map(u => [u, w])), r = p => dist(p, [CX, CY]), shift = p => -k1 * r(p) ** 3 / (f * f);
+    const far = pts.reduce((a, b) => r(b) > r(a) ? b : a), nr = pts.reduce((a, b) => r(b) < r(a) ? b : a);
+    let shown = false;
+    return {
+      prompt: `A square-on board, off to one side. <span class="ca">Rings</span>: where a model with <b>k₁ = 0</b> predicts its corners. The real lens is barrel (k₁ = −${-k1}); everything else in the model is right. <b>Tap the corner with the largest reprojection error.</b>`,
+      view: [-10, 650, -490, 10],
+      visual: st => {
+        st.draw = () => {
+          image(st); st.label([CX, -CY], 'centre', C.dim, [0, 18]);
+          pts.forEach(p => { st.ring(W(p), C.acc, 6); if (shown) { const s = 1 + k1 * (r(p) / f) ** 2, d = [CX + (p[0] - CX) * s, CY + (p[1] - CY) * s]; st.line(W(d), W(p), C.acc, 1.5); st.dot(W(d), C.fg, null, 3.5); } });
+        };
+      },
+      input: {
+        type: 'point', snap: 80, answer: W(far),
+        why: w => { const p = pts.find(q => dist(W(q), w) < 1); return !p ? 'That spot is not a board corner. The question is about the ringed corners.'
+          : p === nr ? `That corner is the one nearest the centre (${Math.round(r(p))} px out), where barrel distortion is weakest. The shift grows with distance from the centre.`
+          : `Barrel distortion pulls a corner toward the centre by an amount that grows with its distance r from the centre. That corner is ${Math.round(r(p))} px out; another one is ${Math.round(r(far))} px out.`; },
+      },
+      explain: `Barrel distortion is zero at the centre and grows steeply with r, so the farthest corner (${Math.round(r(far))} px out) is detected about ${shift(far).toFixed(0)} px inside its ring, while the nearest ${r(nr) ? `(${Math.round(r(nr))} px out) moves only ${shift(nr).toFixed(1)} px` : 'sits on the centre and does not move at all'}. That is why calibration views must reach the image corners: near the centre a barrel lens and a perfect pinhole agree to within detector noise, and k₁ cannot be found.`,
+      after: st => { shown = true; st.redraw(); },
+    };
+  };
+  const scene = (text, opts, explain) => ({ prompt: `${text} RMS: 0.2 px. <b>Which result should you trust least?</b>`, input: { type: 'choice', options: opts }, explain });
+  const k = pick(v, [
+    () => tap([240, 320, 400, 480], [80, 160, 240]),
+    () => scene('A calibration used 12 views. In every one the board faced the camera squarely and filled the image.', [
+      { html: 'The distortion coefficient k₁', why: 'The board filled the image, so corners reached the edges, which is where distortion shows. What these views lack is something else.' },
+      { html: 'The focal length', correct: true },
+      { html: 'The corner spacing', why: 'The spacing is not a result. You measured it on the printed board and gave it to the optimiser.' },
+      { html: 'None: 0.2 px means all of it is good', why: 'A low RMS only says the model reproduces these views. In square-on views a longer f with a farther board reproduces them just as well.' }],
+      'With the board square-on, every corner has the same Z, and u = f·X/Z + c<sub>x</sub> only depends on f/Z. The optimiser can trade focal length against board distance at no cost in RMS, so f is the result to distrust. Tilted views put near and far corners at different depths and break the trade.'),
+    () => tap([80, 160, 240, 320], [240, 320, 400]),
+    () => scene('A calibration used 12 views. The board was tilted a different way in each, but always small and in the middle of the image.', [
+      { html: 'The focal length', why: 'Tilted views are what pin f: near and far edges of the board sit at different depths, and only one f fits both.' },
+      { html: 'The board poses', why: 'The poses are by-products that get thrown away. And tilted boards give the optimiser a good grip on them.' },
+      { html: 'None: 0.2 px means all of it is good', why: 'A low RMS only says the model reproduces these views. None of them has a corner where the lens bends the image noticeably.' },
+      { html: 'The distortion coefficient k₁', correct: true }],
+      'Radial distortion is zero at the centre and grows with r. If every corner sits near the middle, a barrel lens and a perfect pinhole predict almost the same pixels, so any k₁ fits and the reported one means little. Later the bur shows up near the image edge and the error appears there. Views must reach the corners.'),
+    () => tap([320, 400, 480, 560], [80, 160, 240]),
+  ])();
+  return { concept: 'cal-coverage', ...k };
+};
+
+const pJudge = v => {
+  const k = pick(v, [
+    { A: [0.3, 0.4, 500], B: [0.2, 3.0, 525], w: 20, good: 'A' }, { A: [0.15, 2.6, 420], B: [0.35, 0.4, 400], w: 16, good: 'B' },
+    { A: [2.8, 3.0, 630], B: [0.3, 0.35, 600], w: 32, good: 'B' }, { A: [0.4, 0.45, 450], B: [0.1, 4.0, 480], w: 24, good: 'A' },
+  ]);
+  const good = k[k.good], bn = k.good === 'A' ? 'B' : 'A', bad = k[bn], Wm = 1.6, ans = good[2] * Wm / k.w, row = (n, c) => `${n} &nbsp;own ${c[0].toFixed(2)} &nbsp;new ${c[1].toFixed(2)} &nbsp;f = ${c[2]} px`;
+  const flaw = bad[0] > 1 ? `its RMS is ${bad[0]} px even on its own views, and a good calibration is well under 1 px` : `it reaches ${bad[0]} px on its own views but ${bad[1]} px on views it never saw, so it fit its views and is wrong elsewhere`;
+  return {
+    concept: 'cal-judge',
+    prompt: `Two calibrations of your camera. RMS in px on their own views and on new views:<div style="font:14px ui-monospace,Menlo,monospace;color:var(--dim);margin:6px 0">${row('A', k.A)}<br>${row('B', k.B)}</div>The ${Wm} mm bur shank appears <b>${k.w} px</b> wide. <b>What depth do you report, in mm?</b>`,
+    input: {
+      type: 'number', answer: ans, unit: 'mm',
+      why: x => near(x, bad[2] * Wm / k.w) ? `That uses calibration ${bn}, which is the one to reject: ${flaw}.`
+        : near(x, k.w * Wm) || near(x, k.w / Wm) ? 'That combines only the two widths. Depth also needs the focal length: Z = f·W/w, with f taken from the calibration you trust.'
+        : `Pick the calibration that stays well under 1 px on views it did not see, then use similar triangles: Z = f·W/w, with W = ${Wm} mm and w = ${k.w} px.`,
+    },
+    explain: `Trust ${k.good}: it stays well under 1 px on views it was not fitted to. ${bn} fails because ${flaw}. With ${k.good}'s focal length, Z = f·W/w = ${good[2]}·${Wm}/${k.w} = <b>${fmt(ans)} mm</b>. ${bn} would have reported ${fmt(bad[2] * Wm / k.w)} mm: a ${Math.round(Math.abs(bad[2] / good[2] - 1) * 100)}% error in f is the same ${Math.round(Math.abs(bad[2] / good[2] - 1) * 100)}% error in depth.`,
+  };
+};
+
+Reps.lesson({
+  id: 'u2-calibration',
+  title: 'Calibrating the camera',
+  learn: [fitHand, rmsStep, unknowns, coverage, judge],
+  problems: [pReproj, pUnknowns, pRms, pCoverage, pJudge],
+});
+</script>
+</body>
+</html>

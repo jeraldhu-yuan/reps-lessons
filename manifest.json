@@ -18,6 +18,9 @@
     {"id": "u1-frames", "unit": 1, "title": "Changing frames", "minutes": 9, "prerequisites": ["u1-composing"], "path": "u1-frames.html", "concepts": ["frame-coords", "frame-convert", "frame-inverse", "frame-chain", "frame-relative"]},
     {"id": "u1-rotations-3d", "unit": 1, "title": "Rotations in 3D", "minutes": 9, "prerequisites": ["u1-frames"], "path": "u1-rotations-3d.html", "concepts": ["rot3-right-hand", "rot3-columns", "rot3-axis-fixed", "rot3-order", "rot3-axis-angle"]},
     {"id": "u1-se3", "unit": 1, "title": "Poses: rotation plus position", "minutes": 10, "prerequisites": ["u1-rotations-3d"], "path": "u1-se3.html", "concepts": ["pose-apply", "pose-matrix", "pose-compose", "pose-inverse", "pose-relative"]},
-    {"id": "u2-pinhole", "unit": 2, "title": "The pinhole camera", "minutes": 9, "prerequisites": ["u1-se3"], "path": "u2-pinhole.html", "concepts": ["pin-similar-triangles", "pin-depth-scale", "pin-focal", "pin-principal", "pin-ray"]}
+    {"id": "u2-pinhole", "unit": 2, "title": "The pinhole camera", "minutes": 9, "prerequisites": ["u1-se3"], "path": "u2-pinhole.html", "concepts": ["pin-similar-triangles", "pin-depth-scale", "pin-focal", "pin-principal", "pin-ray"]},
+    {"id": "u2-extrinsics", "unit": 2, "title": "From world to pixel", "minutes": 10, "prerequisites": ["u2-pinhole"], "path": "u2-extrinsics.html", "concepts": ["ext-world-to-cam", "ext-order", "ext-behind", "ext-k-matrix", "ext-camera-moves"]},
+    {"id": "u2-distortion", "unit": 2, "title": "Lens distortion", "minutes": 9, "prerequisites": ["u2-extrinsics"], "path": "u2-distortion.html", "concepts": ["dist-radial", "dist-barrel", "dist-model", "dist-lines", "dist-undistort-first"]},
+    {"id": "u2-calibration", "unit": 2, "title": "Calibrating the camera", "minutes": 10, "prerequisites": ["u2-distortion"], "path": "u2-calibration.html", "concepts": ["cal-reprojection", "cal-rms", "cal-unknowns", "cal-coverage", "cal-judge"]}
   ]
 }

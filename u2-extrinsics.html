@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<link rel="stylesheet" href="shared/reps.css">
+<script src="shared/reps.js"></script>
+</head>
+<body>
+<script>
+const { C, rp, add, sub, fmt, pick, mat } = Reps;
+
+// Scene screens are a slice through the optical axis, drawn like the pinhole lesson: Z (forward) to the right, X up.
+// In the code a point is (X, Z) and slice(st) makes the stage draw it that way round.
+// A frame is (origin o, deg): its x axis is rp([1, 0], deg) and its z axis rp([0, 1], deg).
+const F = 400, CX = 320, HALF = 0.8;                              // 640 px image row: tan(half field of view) = 320/400
+const q = (p, deg) => rp(p, deg).map(x => Math.round(x) || 0);    // exact quarter turns
+const toFrame = (p, o, deg) => rp(sub(p, o), -deg);
+const fromFrame = (p, o, deg) => add(o, rp(p, deg));
+const proj = p => F * p[0] / p[1] + CX;                           // u of a camera-frame point (X, Z)
+const num = n => (n < 0 ? '−' : '') + fmt(Math.abs(n));             // a real minus sign
+const par = n => n < 0 ? `(${num(n)})` : fmt(n);                    // for use inside a product
+const vec = p => '(' + p.map(num).join(', ') + ')';
+const slice = st => { if (st.sliced) return; const px = st.px.bind(st); st.px = p => px([p[1], p[0]]); st.sliced = true; };
+const Tn = (a, b, inv) => `T<sub>${a},${b}</sub>${inv ? '⁻¹' : ''}`;
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+// the first slip whose value matches x explains it; `rest` covers every other wrong number
+const slip = (x, list, rest) => (list.find(([val]) => Number.isFinite(val) && Math.abs(x - val) < 0.6) || [0, rest])[1];
+
+const axes = (st, o, deg, name, len = 1.2) => {
+  st.arrow(o, fromFrame([len, 0], o, deg), C.x); st.arrow(o, fromFrame([0, len], o, deg), C.z); st.dot(o, C.fg, null, 4);
+  st.label(fromFrame([len + .3, 0], o, deg), 'x', C.x); st.label(fromFrame([0, len + .3], o, deg), 'z', C.z);
+  if (name) st.label(fromFrame([-.55, -.45], o, deg), name, C.fg);
+};
+// dashed walk from a frame's origin to the point with coordinates p in that frame; zFirst walks the depth first
+const legs = (st, o, deg, p, zFirst) => {
+  const m = fromFrame(zFirst ? [0, p[1]] : [p[0], 0], o, deg), e = fromFrame(p, o, deg);
+  st.line(o, m, zFirst ? C.z : C.x, 1.5, [4, 4]); st.line(m, e, zFirst ? C.x : C.z, 1.5, [4, 4]);
+};
+// camera from above: pinhole at o, field of view out to `reach`, image row drawn at distance `row` (0 = none)
+const camera = (st, o, deg, row, reach) => {
+  const at = (x, z) => fromFrame([x, z], o, deg);
+  st.poly([o, at(-HALF * reach, reach), at(HALF * reach, reach)], null, 'rgba(77,171,247,.07)');
+  st.line(o, at(-HALF * reach, reach), C.ghost, 1, [4, 4]); st.line(o, at(HALF * reach, reach), C.ghost, 1, [4, 4]);
+  st.poly([at(-.35, 0), at(.35, 0), at(.35, -.6), at(-.35, -.6)], C.dim, C.line, 1.5);
+  if (row) {
+    st.line(at(-HALF * row, row), at(HALF * row, row), C.fg, 3); st.line(at(0, row - .14), at(0, row + .14), C.fg, 2);
+    st.label(at(-HALF * row, row), '0', C.dim, [0, 13]); st.label(at(HALF * row, row), '640', C.dim, [0, -13]);
+  }
+  st.dot(o, C.fg, null, 4);
+};
+const onRow = (o, deg, row, u) => fromFrame([(u - CX) / F * row, row], o, deg);   // where pixel u sits on the drawn row
+const blob = (c, r, n = 4) => Array.from({ length: 28 }, (_, i) => { const a = i * Math.PI / 14, k = r * (1 + .1 * Math.cos(n * a)); return [c[0] + k * Math.cos(a), c[1] + k * Math.sin(a)]; });
+// integer mm grid of a slice view, numbered along both axes
+const grid = st => {
+  const [z0, z1, x0, x1] = st.view, g = st.g;
+  for (let z = Math.ceil(z0); z <= z1; z++) st.line([x0, z], [x1, z], z ? C.line : C.ghost, z ? 1 : 1.5);
+  for (let x = Math.ceil(x0); x <= x1; x++) st.line([x, z0], [x, z1], x ? C.line : C.ghost, x ? 1 : 1.5);
+  g.font = '11px ui-monospace, Menlo, monospace'; g.fillStyle = C.dim; g.textAlign = 'center'; g.textBaseline = 'top';
+  for (let z = Math.ceil(z0) + 1; z < z1; z++) if (z) g.fillText(num(z), st.px([0, z])[0], st.px([0, z])[1] + 3);
+  g.textAlign = 'right'; g.textBaseline = 'middle';
+  for (let x = Math.ceil(x0) + 1; x < x1; x++) if (x) g.fillText(num(x), st.px([x, 0])[0] - 4, st.px([x, 0])[1]);
+  st.label([.42, z1 - .3], 'Z', C.z); st.label([x1 - .3, .42], 'X', C.x);
+};
+// the camera frame as the grid: camera at the origin, looking to the right
+const camGrid = st => { slice(st); grid(st); camera(st, [0, 0], 0, 0, 12); st.label([0, 0], 'camera', C.dim, [-20, 25]); };
+
+// ---- learn ----
+
+const camMoves = v => {
+  const k = pick(v, [{ slide: 1 }, { turn: -1 }, { slide: -1 }, { turn: 1 }]);    // +1 = toward the camera's +X, its right
+  const dir = k.slide || k.turn, side = dir > 0 ? '+X' : '−X', other = dir > 0 ? '−X' : '+X', hand = dir > 0 ? 'right' : 'left', here = dir > 0 ? 'up' : 'down';
+  const cusp = [0, 5], TURN = Math.atan(.5) * 180 / Math.PI, tooth = blob([0, 6.2], 1.1);
+  const uEnd = CX - dir * F * (k.slide ? 2 / 5 : .5);
+  let x = 0, yaw = 0, shown = false;                               // camera slide in mm; turn in degrees, positive = toward +X
+  const O = {
+    '−X': { html: 'Toward u = 0' }, '+X': { html: 'Toward u = 640' },
+    still: { html: 'Nowhere. The tooth did not move.', why: 'The cusp kept its place in the tooth frame. But a pixel comes from the cusp\'s position in the <i>camera</i> frame, and that changed the moment the camera moved.' },
+  };
+  O[other].correct = true;
+  O[side].why = `That is the way the camera ${k.slide ? 'slid' : 'turned'}: toward ${side}, where u is ${dir > 0 ? 'large' : 'small'}. The image is taken from the camera's own frame, and seen from there a tooth that holds still goes the opposite way.`;
+  return {
+    concept: 'ext-camera-moves',
+    prompt: `The camera sees a cusp dead ahead: u = 320, the middle of its image row (white bar). The elastic mount lets it <b>${k.slide ? 'slide 2 mm to' : 'turn toward'} its ${hand}, ${side}</b> (${here} here). The tooth holds still. <b>Where does the cusp go in the image?</b>`,
+    view: [-2.4, 9, -4.45, 4.45],
+    visual: st => {
+      slice(st);
+      st.draw = () => {
+        const o = [x, 0], pc = toFrame(cusp, o, -yaw), u = proj(pc);
+        st.poly(tooth, C.ghost, 'rgba(255,255,255,.05)'); st.label([0, 6.45], 'tooth', C.ghost);
+        camera(st, o, -yaw, 2, 16); st.label(o, 'camera', C.dim, [-14, 27]);
+        st.line(o, cusp, C.acc, 1.5, [3, 4]); st.dot(onRow(o, -yaw, 2, u), C.acc, null, 5); st.dot(cusp, C.acc); st.label(cusp, 'cusp', C.acc, [-6, x > 0 ? 18 : -17]);
+        st.readout(shown ? `camera frame: cusp X = ${num(pc[0])}, Z = ${num(pc[1])}<br>u = 400 · X/Z + 320 = ${fmt(Math.round(u))}` : '');
+      };
+    },
+    input: { type: 'choice', options: pick(v, [[O['−X'], O['+X'], O.still], [O.still, O['+X'], O['−X']], [O['+X'], O.still, O['−X']]]) },
+    explain: `The pinhole formula only ever sees the cusp <b>in the camera frame</b>. The camera ${k.slide ? `slid 2 mm toward ${side}, so in that frame the cusp slid 2 mm toward ${other}: X went from 0 to ${num(-2 * dir)}, and u = 400·${par(-2 * dir)}/5 + 320 = ${uEnd}` : `turned toward ${side}, so in that frame the cusp swung toward ${other}: X/Z went from 0 to ${num(-.5 * dir)}, and u = 400·${par(-.5 * dir)} + 320 = ${uEnd}`}. The scene always does the opposite of the camera: camera goes ${hand}, the picture goes ${dir > 0 ? 'left' : 'right'}. In symbols: the camera's own pose is ${Tn('tooth', 'cam')}, and projection uses its inverse, ${Tn('cam', 'tooth')} = ${Tn('tooth', 'cam', 1)}. <b>Drag the camera</b> and watch u.`,
+    after: st => {
+      shown = true;
+      st.animate(1100, t => { if (k.slide) x = 2 * dir * t; else yaw = TURN * dir * t; });
+      st.drag(w => { if (k.slide) x = clamp(w[1], -2, 2); else if (w[0] > .3) yaw = clamp(Math.atan2(w[1], w[0]) * 180 / Math.PI, -35, 35); });   // w is the stage point (Z, X)
+    },
+  };
+};
+
+const TF = [{ t: [-1, 2], deg: 90, p: [3, 1], i: 1 }, { t: [-1, 5], deg: -90, p: [1, 3], i: 0 }, { t: [1, 1], deg: 90, p: [3, 2], i: 1 }, { t: [-3, 5], deg: -90, p: [1, 2], i: 0 }];
+
+const toCam = v => {
+  const { t, deg, p, i } = pick(v, TF), pc = add(q(p, deg), t), walk = `walk ${p[0]} along the tooth's red x arrow, then ${p[1]} along its blue z arrow`;
+  let shown = false;
+  return {
+    concept: 'ext-world-to-cam',
+    prompt: `Grid = <b>camera frame</b>. Registration puts the tooth frame at <b>(X, Z) = ${vec(t)}</b>, turned as drawn. An STL vertex is at <b>(x, z) = ${vec(p)}</b> mm in tooth coordinates. u = f·X/Z + c<sub>x</sub> ${i ? 'divides by depth. <b>What Z does it need?</b>' : 'needs an X. <b>What X goes in?</b>'}`,
+    view: [-2, 7, -4, 4],
+    visual: st => {
+      st.draw = () => {
+        camGrid(st); axes(st, t, deg, 'tooth');
+        if (shown) { legs(st, t, deg, p); st.line([0, 0], pc, C.acc, 1.5, [3, 4]); st.dot(pc, C.acc, `X ${num(pc[0])}, Z ${pc[1]}`); }
+      };
+    },
+    input: {
+      type: 'number', answer: pc[i], unit: 'mm',
+      why: x => slip(x, [
+        [p[i], `That is the vertex's ${'xz'[i]} in <i>tooth</i> coordinates, straight from the STL. The formula measures ${i ? 'depth along the camera\'s optical axis' : 'sideways distance from the camera\'s optical axis'}. Move the vertex into the camera frame first.`],
+        [t[i] + p[i], `You started at the tooth origin, good, but then walked along the camera's axes. The tooth frame is turned: ${walk}.`],
+        [pc[1 - i], `That is the vertex's ${'ZX'[i]} in the camera frame, the other coordinate. ${i ? 'Depth Z is how far along the optical axis it sits: to the right here.' : 'X is how far off the optical axis it sits: up the screen here.'}`],
+        [t[i], `That is the ${'XZ'[i]} of the tooth origin. The vertex is not at the origin: from there, ${walk}.`],
+        [-pc[i], 'Right size, wrong sign. In this drawing the camera\'s +X is up the screen and +Z, forward, is to the right.'],
+      ], `Start at the tooth origin, ${walk}. Then read the ${'XZ'[i]} of the spot where you land off the grid (Z runs to the right, X up).`),
+    },
+    explain: `From the tooth origin, ${p[0]} along tooth x and ${p[1]} along tooth z: <b>p<sub>cam</sub> = ${Tn('cam', 'tooth')} · p<sub>tooth</sub></b>, which is (X, Z) = ${vec(pc)}. Only these numbers may enter the formula: u = 400·${par(pc[0])}/${pc[1]} + 320 = ${fmt(proj(pc))}. Feeding in the STL's own ${vec(p)} gives u = ${fmt(Math.round(proj(p)))}: wrong, and nothing warns you. The STL never changes. ${Tn('cam', 'tooth')} is new in every video frame, because the camera rides on an elastic mount.`,
+    after: st => { shown = true; st.redraw(); },
+  };
+};
+
+// pipeline steps as tiles: ['frame', T, position in the chain] | ['trap', T] | ['div'] | ['K']
+const tileHtml = t => t[0] === 'div' ? 'divide X, Y by Z' : t[0] === 'K' ? '× f, then + (c<sub>x</sub>, c<sub>y</sub>)' : `apply ${t[1]}`;
+const orderWhy = (tiles, src, trap, chain) => o => {
+  const r = o.map(j => tiles[j][0]), K = r.indexOf('K'), D = r.indexOf('div'), fr = r.lastIndexOf('frame');
+  return r.includes('trap') ? trap
+    : D < fr ? `You divided by Z before the point was in the camera frame. That Z is a ${src}-frame coordinate, not the depth along the optical axis. Change frames first.`
+    : K < fr ? `You applied f and (c<sub>x</sub>, c<sub>y</sub>) before the frame change. They turn a camera-frame ray into pixels and mean nothing in ${src} coordinates.`
+    : K < D ? 'You multiplied by f and added (c<sub>x</sub>, c<sub>y</sub>) before dividing by Z. That computes (f·X + c<sub>x</sub>)/Z, so the principal point gets divided by depth too. Divide first: c<sub>x</sub> is a pixel offset, added last.'
+    : chain || 'Frame change first, then divide by Z, then f and the principal point.';
+};
+
+const order = v => {
+  const k = pick(v, [
+    { src: 'tooth', what: 'A vertex of the tooth STL', tiles: [['div'], ['K'], ['frame', Tn('cam', 'tooth')], ['trap', Tn('tooth', 'cam')]], answer: [2, 0, 1] },
+    { src: 'world', what: 'A point given in <b>world</b> coordinates', tiles: [['trap', Tn('world', 'cam')], ['K'], ['frame', Tn('cam', 'world')], ['div']], answer: [2, 3, 1] },
+    { src: 'tooth', what: 'A vertex of the tooth STL', tiles: [['K'], ['trap', Tn('tooth', 'cam')], ['div'], ['frame', Tn('cam', 'tooth')]], answer: [3, 2, 0] },
+  ]);
+  const good = Tn('cam', k.src), bad = Tn(k.src, 'cam');
+  return {
+    concept: 'ext-order',
+    prompt: `${k.what} has to become a pixel. Three steps do it. <b>Tap the steps in the order you run them</b>, first step first. One tile is a trap.`,
+    input: {
+      type: 'order', tiles: k.tiles.map(tileHtml), answer: k.answer,
+      why: orderWhy(k.tiles, k.src, `${bad} is the camera's own pose: it converts camera coordinates into ${k.src} coordinates. The point starts in ${k.src} coordinates and the formula needs camera coordinates, so use the inverse, ${good}.`),
+    },
+    explain: `<b>${k.src} mm → camera mm → ray → pixel.</b> ${good} (the <b>extrinsics</b>) moves the point into the camera frame. Dividing by its depth Z leaves (X/Z, Y/Z), the ray it sits on. The <b>intrinsics</b> f and (c<sub>x</sub>, c<sub>y</sub>) turn that ray into a pixel. This is the forward model that registration (Unit 6) runs backwards: it searches for the ${Tn('cam', 'tooth')} that makes the projected STL land on the tooth in the video frame.`,
+  };
+};
+
+// the image, drawn in pixels: u to the right, v down from the top-left corner (stage y = -v)
+const image = st => {
+  const g = st.g;
+  st.poly([[0, 0], [640, 0], [640, -480], [0, -480]], C.ghost, '#12141a', 1.5);
+  for (let u = 80; u < 640; u += 80) st.line([u, 0], [u, -480], C.line, 1);
+  for (let w = 80; w < 480; w += 80) st.line([0, -w], [640, -w], C.line, 1);
+  g.font = '11px ui-monospace, Menlo, monospace'; g.fillStyle = C.dim; g.textBaseline = 'middle'; g.textAlign = 'center';
+  for (const u of [0, 160, 320, 480, 640]) g.fillText(u, ...st.px([u, 26]));
+  g.textAlign = 'right'; for (const w of [160, 320, 480]) g.fillText(w, ...st.px([-10, -w]));
+  st.arrow([0, 0], [110, 0], C.x, 2.5); st.arrow([0, 0], [0, -110], C.y, 2.5); st.label([136, -30], 'u', C.x); st.label([30, -136], 'v', C.y);
+};
+
+const kMatrix = v => {
+  const { f, c, p } = pick(v, [{ f: 400, c: [320, 240], p: [2, -1, 5] }, { f: 800, c: [320, 240], p: [-3, 1, 10] }, { f: 400, c: [400, 240], p: [-1, 1, 5] }, { f: 800, c: [320, 160], p: [1, 2, 10] }]);
+  const [X, Y, Z] = p, n = [X / Z, Y / Z], px = [f * n[0] + c[0], f * n[1] + c[1]], S = ([u, w]) => [u, -w];
+  const same = (a, b) => a[0] === b[0] && a[1] === b[1], updown = Y < 0 ? 'above' : 'below';
+  let shown = 0;
+  return {
+    concept: 'ext-k-matrix',
+    prompt: `The last step as one matrix: <b>(u, v, 1) = K · (X/Z, Y/Z, 1)</b>, with K = ${mat([[f, 0, c[0]], [0, f, c[1]], [0, 0, 1]])}. In the camera frame a vertex is at (X, Y, Z) = <b>${vec(p)}</b> mm. <b>Tap its pixel.</b>`,
+    view: [-64, 664, -500, 50],
+    visual: st => {
+      st.draw = () => {
+        image(st);
+        if (shown) {
+          const o = S(c), m = [o[0] + (px[0] - c[0]) * Math.min(1, shown * 2), o[1]], e = [m[0], o[1] - (px[1] - c[1]) * Math.max(0, shown * 2 - 1)];
+          st.ring(o, C.fg, 6); st.label(o, '(cx, cy)', C.dim, [0, Y > 0 ? -18 : 18]);
+          st.arrow(o, m, C.x, 2.5); if (shown > .5) st.arrow(m, e, C.y, 2.5);
+          if (shown === 1) { st.dot(S(px), C.acc); st.label(S(px), `(${px[0]}, ${px[1]})`, C.acc, [px[0] > 400 ? -17 : 17, -15]); }
+        }
+      };
+    },
+    input: {
+      type: 'point', snap: 80, answer: S(px),
+      why: w => {
+        const t = [w[0], -w[1]];
+        return same(t, c) ? `That is (${c[0]}, ${c[1]}), the principal point: the last column of K, where the optical axis meets the image. Only a point with X = Y = 0 lands there. This vertex is off the axis, so add f·X/Z and f·Y/Z.`
+          : same(t, [px[0], 2 * c[1] - px[1]]) ? `u is right, v is flipped. Y = ${num(Y)} means ${updown} the optical axis, because camera y points down. v also counts downward from the top edge, so the vertex lands ${updown} the principal point.`
+          : same(t, [2 * c[0] - px[0], px[1]]) ? `v is right, u is flipped. X = ${num(X)} is to the ${X < 0 ? 'left' : 'right'} of the optical axis, and u grows to the right.`
+          : same(t, [f * n[0], f * n[1]]) ? `That is (f·X/Z, f·Y/Z) with nothing added. The last column of K was skipped: row 1 ends in + ${c[0]}, row 2 in + ${c[1]}.`
+          : same(t, [f * n[0] + c[1], f * n[1] + c[0]]) ? `The two offsets are swapped. Row 1 of K ends in ${c[0]}: that one belongs to u. Row 2 ends in ${c[1]}, for v.`
+          : t[0] === px[0] ? `u is right. Now multiply out row 2 of K: v = ${f}·(${num(Y)}/${Z}) + ${c[1]}.`
+          : t[1] === px[1] ? `v is right. Now multiply out row 1 of K: u = ${f}·(${num(X)}/${Z}) + ${c[0]}.`
+          : `Multiply K out one row at a time. Row 1: u = ${f}·(X/Z) + ${c[0]}. Row 2: v = ${f}·(Y/Z) + ${c[1]}. Here X/Z = ${num(n[0])} and Y/Z = ${num(n[1])}.`;
+      },
+    },
+    explain: `Row 1: u = ${f}·${par(n[0])} + ${c[0]} = ${px[0]}. Row 2: v = ${f}·${par(n[1])} + ${c[1]} = ${px[1]}. That is the pinhole formula, stored as the <b>intrinsic matrix</b> K = ${mat([['f<sub>x</sub>', 0, 'c<sub>x</sub>'], [0, 'f<sub>y</sub>', 'c<sub>y</sub>'], [0, 0, 1]])}. Libraries often multiply K·(X, Y, Z) and divide by the third entry last. Same pixel: there c<sub>x</sub> rides along multiplied by Z until the division.`,
+    after: st => st.animate(1200, t => { shown = t; }),
+  };
+};
+
+const behind = v => {
+  const { B, ask } = pick(v, [{ B: [1, -2], ask: 0 }, { B: [-2, -4], ask: 1 }, { B: [-1, -2], ask: 0 }, { B: [2, -4], ask: 1 }]);
+  const u = proj(B), hit = [B[0] / B[1] * 2.35, 2.35], sgn = Math.sign(hit[0]);
+  const molars = [[-2.5, 4.5], [-2.5, 2.5], [-2.3, 2.35], [2.3, 2.35], [2.5, 2.5], [2.5, 4.5]], incisor = blob([B[0], B[1] - .42], .45, 2);
+  const A = [
+    [{ html: 'That incisor vertex', why: 'Light reaches the sensor only through the lens, from the front. The vertex is behind it. The formula does not know that: it just divides, and a negative Z still gives a number.' },
+      { html: 'Whatever is in front of the lens along that pixel\'s ray', correct: true },
+      { html: 'Nothing. No ray belongs to that pixel.', why: `u = ${u} is an ordinary pixel between 0 and 640, and every pixel has a ray leaving the front of the camera. It shows whatever that ray hits first. It just is not this vertex.` }],
+    [{ html: `Yes. ${u} is inside the 640 px image.`, why: 'Lying between 0 and 640 only says the number looks like a pixel. The vertex is behind the lens and no light from there reaches the sensor. The formula cannot tell: it just divides.' },
+      { html: `Yes, but mirrored, at u = ${640 - u}.`, why: 'There is no pixel to mirror: nothing behind the lens is imaged anywhere. The formula has in fact already mirrored it. Dividing by a negative Z flips the vertex through the pinhole.' },
+      { html: 'No. It is behind the camera and has no pixel.', correct: true }],
+  ][ask];
+  let t = 0;
+  return {
+    concept: 'ext-behind',
+    prompt: `The arch scan includes an incisor <b>behind</b> the lens: one vertex is at (X, Z) = ${vec(B)} mm in the camera frame. The formula still answers: u = 400·${par(B[0])}/${par(B[1])} + 320 = <b>${u}</b>. <b>${ask ? `Should your renderer draw the vertex at u = ${u}?` : `What does the real image show at u = ${u}?`}</b>`,
+    view: [-5, 4.2, -2.7, 2.7],
+    visual: st => {
+      slice(st);
+      st.draw = () => {
+        st.line([-2.7, 0], [2.7, 0], C.ghost, 1, [2, 5]); st.label([2.42, 0], 'Z = 0', C.dim, [7, 0]);
+        st.poly(molars, C.ghost, 'rgba(255,255,255,.05)'); st.label([0, 3.3], 'molars', C.ghost);
+        st.poly(incisor, C.ghost, 'rgba(255,255,255,.05)');
+        camera(st, [0, 0], 0, 2, 2.35);
+        if (t) {
+          const a = Math.min(1, t * 2), b = Math.max(0, t * 2 - 1);
+          st.line(B, [B[0] * (1 - a), B[1] * (1 - a)], C.x, 2, [4, 4]);
+          if (b) st.line([0, 0], [hit[0] * b, hit[1] * b], C.acc, 2);
+          if (t === 1) { st.dot(onRow([0, 0], 0, 2, u), C.acc, null, 5); st.ring(hit, C.acc, 8); st.label(onRow([0, 0], 0, 2, u), 'u = ' + u, C.acc, [-9, -sgn * 9]); st.label(B, 'no pixel', C.x, [11, sgn * 14]); }
+        }
+        st.dot(B, C.acc, t === 1 ? null : 'vertex');
+        st.readout(t === 1 ? `pixel ${u} looks out along the yellow ray` : '');
+      };
+    },
+    input: { type: 'choice', options: A },
+    explain: `Pixel ${u} looks out along the ray through ${vec([-B[0], -B[1]])}: the same line through the pinhole, on the front side. Dividing by a negative Z silently flips the vertex through the pinhole onto that ray. So after the frame change, <b>test Z &gt; 0 before you divide</b>. Z ≤ 0 means behind the camera, or level with the pinhole: no pixel, skip the vertex.`,
+    after: st => st.animate(1300, x => { t = x; }),
+  };
+};
+
+// ---- problems ----
+
+const PJ = [{ t: [2, 3], deg: 90, p: [2, 1] }, { t: [-2, 5], deg: -90, p: [1, 3] }, { t: [1, 6], deg: 180, p: [3, 1] }, { t: [0, 1], deg: 90, p: [4, 2] }, { t: [2, 1], deg: 90, p: [4, 3] }];
+
+const pProject = v => {
+  const { t, deg, p } = pick(v, PJ), pc = add(q(p, deg), t), ans = proj(pc);
+  let shown = false;
+  return {
+    concept: 'ext-world-to-cam',
+    prompt: `Grid = <b>camera frame</b>. This video frame's ${Tn('cam', 'tooth')} puts the tooth frame at <b>(X, Z) = ${vec(t)}</b>, turned as drawn. An STL vertex is at <b>(x, z) = ${vec(p)}</b> mm in tooth coordinates. f = 400 px, c<sub>x</sub> = 320. <b>What is its u?</b>`,
+    view: [-2, 7, -4, 4],
+    visual: st => {
+      st.draw = () => {
+        camGrid(st); axes(st, t, deg, 'tooth');
+        if (shown) { legs(st, t, deg, p); st.line([0, 0], pc, C.acc, 1.5, [3, 4]); st.dot(pc, C.acc, `X ${num(pc[0])}, Z ${pc[1]}`); }
+      };
+    },
+    input: {
+      type: 'number', answer: ans, unit: 'px',
+      why: x => slip(x, [
+        [proj(p), `You projected the tooth coordinates ${vec(p)} as they are, without moving them into the camera frame. The formula needs X and Z measured from the camera: apply ${Tn('cam', 'tooth')} first.`],
+        [proj(add(p, t)), 'You started at the tooth origin, then walked along the camera\'s axes. The tooth frame is turned: follow its own red x and blue z arrows.'],
+        [proj(add(q(p, -deg), t)), 'The walk from the tooth origin was turned the wrong way. Follow the drawn arrows: red is tooth x, blue is tooth z.'],
+        [proj(q(p, deg)), 'You turned the vertex but did not add the tooth origin. The walk starts there, not at the camera.'],
+        [ans - CX, 'That is f·X/Z alone. Add the principal point c<sub>x</sub> = 320: u is counted from the left edge of the image, not from its centre.'],
+        [2 * CX - ans, 'Right distance from the image centre, wrong side. Check the sign of X: +X (up the screen here) is the side where u is above 320.'],
+        [F * pc[1] / pc[0] + CX, 'The fraction is upside down. X goes on top and the depth Z underneath.'],
+      ], `u = 400·X/Z + 320 needs the vertex's X and Z <i>in the camera frame</i>. Start at the tooth origin, walk ${p[0]} along the tooth's red x arrow and ${p[1]} along its blue z arrow, and read X and Z off the grid.`),
+    },
+    explain: `Frame change first: from the tooth origin, ${p[0]} along tooth x and ${p[1]} along tooth z gives p<sub>cam</sub> = ${Tn('cam', 'tooth')} · p<sub>tooth</sub>, which is (X, Z) = ${vec(pc)}. Then project: u = 400·${par(pc[0])}/${pc[1]} + 320 = ${ans}.`,
+    after: st => { shown = true; st.redraw(); },
+  };
+};
+
+const pClip = v => {
+  const k = pick(v, [
+    { good: [1, 5], behind: [-2, -5], off: [5, 5], zero: [3, 0] }, { good: [-2, 4], behind: [1, -4], off: [-4, 4], zero: [-2, 0] },
+    { good: [3, 5], behind: [3, -5], off: [4, 2], zero: [1, 0] }, { good: [-1, 2], behind: [-1, -2], off: [-5, 5], zero: [2, 0] },
+    { good: [2, 4], behind: [-3, -5], off: [3, 2], zero: [-1, 0] },
+  ]);
+  const ub = proj(k.behind), uo = proj(k.off), edge = uo > 640 ? 'above 640' : 'below 0';
+  const opts = {
+    good: { html: vec(k.good), correct: true },
+    behind: { html: vec(k.behind), why: `Z = ${num(k.behind[1])} is behind the camera. The formula still returns u = ${ub}, which looks like a fine pixel, but no light from behind the lens reaches the sensor.` },
+    off: { html: vec(k.off), why: `It is in front of the camera, but u = 400·${par(k.off[0])}/${k.off[1]} + 320 = ${num(uo)}. That is ${edge}, off the end of the 640 px row.` },
+    zero: { html: vec(k.zero), why: 'Z = 0 is level with the pinhole, off to the side. The formula would divide by zero, and the camera cannot see sideways. No pixel.' },
+  };
+  return {
+    concept: 'ext-behind',
+    prompt: `Four STL vertices, each as (X, Z) in mm in the <b>camera frame</b>. The image row is 640 px wide, f = 400 px, c<sub>x</sub> = 320. <b>Which vertex shows up in the image?</b>`,
+    input: { type: 'choice', cols: 2, options: pick(v, [['behind', 'good', 'off', 'zero'], ['off', 'zero', 'good', 'behind'], ['good', 'off', 'zero', 'behind'], ['zero', 'behind', 'off', 'good']]).map(n => opts[n]) },
+    explain: `Two tests, in this order. <b>Z &gt; 0?</b> ${vec(k.behind)} is behind the lens even though the formula returns u = ${ub}, and ${vec(k.zero)} would divide by zero. <b>Inside the image?</b> ${vec(k.off)} is in front, but u = ${num(uo)} is ${edge}. Only ${vec(k.good)} passes both: u = ${proj(k.good)}.`,
+  };
+};
+
+const pK = v => {
+  const { f, c, p, i } = pick(v, [
+    { f: [400, 420], c: [320, 240], p: [2, -1, 5], i: 1 }, { f: [800, 780], c: [330, 250], p: [-3, 2, 10], i: 0 },
+    { f: [600, 620], c: [310, 250], p: [1, -1, 4], i: 1 }, { f: [500, 520], c: [300, 260], p: [2, 1, 5], i: 0 },
+    { f: [400, 420], c: [320, 240], p: [-2, 1, 5], i: 0 },
+  ]);
+  const Z = p[2], a = p[i], b = p[1 - i], j = 1 - i, ans = f[i] * a / Z + c[i];
+  const row = `${'uv'[i]} = f<sub>${'xy'[i]}</sub>·${'XY'[i]}/Z + c<sub>${'xy'[i]}</sub>`;
+  return {
+    concept: 'ext-k-matrix',
+    prompt: `K = ${mat([[f[0], 0, c[0]], [0, f[1], c[1]], [0, 0, 1]])}. In the camera frame the bur tip is at (X, Y, Z) = <b>${vec(p)}</b> mm. <b>What is its ${'uv'[i]}?</b>`,
+    input: {
+      type: 'number', answer: ans, unit: 'px',
+      why: x => slip(x, [
+        [f[j] * b / Z + c[j], `That is ${'uv'[j]}, from row ${j + 1} of K. The question asks for ${'uv'[i]}: row ${i + 1}.`],
+        [f[j] * a / Z + c[i], `You used ${f[j]}, which is f<sub>${'xy'[j]}</sub>. Row ${i + 1} of K holds f<sub>${'xy'[i]}</sub> = ${f[i]}.`],
+        [f[i] * a / Z + c[j], `You added ${c[j]}, which is c<sub>${'xy'[j]}</sub>. Row ${i + 1} of K ends in c<sub>${'xy'[i]}</sub> = ${c[i]}.`],
+        [f[i] * a / Z, `That is f<sub>${'xy'[i]}</sub>·${'XY'[i]}/Z alone. Add the last entry of the row, c<sub>${'xy'[i]}</sub> = ${c[i]}.`],
+        [c[i] - f[i] * a / Z, `Right distance from the principal point, wrong side. ${'XY'[i]} = ${num(a)} is ${a < 0 ? 'negative' : 'positive'}, so ${'uv'[i]} is ${a < 0 ? 'below' : 'above'} ${c[i]}: ${i ? 'camera y and v both point down' : 'camera x and u both point right'}.`],
+        [f[i] * b / Z + c[i], `You put ${'XY'[j]} into row ${i + 1} of K. Row ${i + 1} makes ${'uv'[i]}, and ${'uv'[i]} comes from ${'XY'[i]} = ${num(a)}: ${i ? 'camera y and v both point down' : 'camera x and u both point right'}.`],
+        [f[i] * a + c[i], 'The division by Z is missing. K multiplies (X/Z, Y/Z, 1), not (X, Y, 1).'],
+        [c[i], `That is c<sub>${'xy'[i]}</sub> itself, where a point on the optical axis lands. The tip is off the axis: add f<sub>${'xy'[i]}</sub>·${'XY'[i]}/Z.`],
+      ], `Row ${i + 1} of K reads ${row}. Pick those two entries out of the matrix, and divide ${'XY'[i]} by Z before multiplying.`),
+    },
+    explain: `K = ${mat([['f<sub>x</sub>', 0, 'c<sub>x</sub>'], [0, 'f<sub>y</sub>', 'c<sub>y</sub>'], [0, 0, 1]])}, so row ${i + 1} gives ${row} = ${f[i]}·${par(a)}/${Z} + ${c[i]} = ${ans}. f<sub>x</sub> and f<sub>y</sub> differ a little when pixels are not exactly square, and the principal point is rarely the exact image centre. Read all four from K; never assume them.`,
+  };
+};
+
+const LOOK = { '-90': ['+X', '−Z'], 90: ['−X', '+Z'] };   // camera deg -> where it looks, and where its own +x points, in tooth axes
+const pInverse = v => {
+  const { c, deg, p } = pick(v, [{ c: [1, 2], deg: -90, p: [5, 4] }, { c: [6, 2], deg: 90, p: [1, 4] }, { c: [1, 5], deg: -90, p: [6, 2] }, { c: [6, 5], deg: 90, p: [2, 3] }]);
+  const pc = q(sub(p, c), -deg), ans = proj(pc), [look, right] = LOOK[deg], lr = pc[0] > 0 ? '+x' : '−x';
+  let shown = false;
+  return {
+    concept: 'ext-camera-moves',
+    prompt: `Grid = <b>tooth frame</b>. Your renderer placed the camera at <b>(X, Z) = ${vec(c)}</b>, looking along tooth ${look}: its own pose ${Tn('tooth', 'cam')}, axes drawn. f = 400 px, c<sub>x</sub> = 320. <b>What is u for the cusp at ${vec(p)}?</b>`,
+    view: [-1, 7, -1, 7],
+    visual: st => {
+      slice(st);
+      st.draw = () => {
+        grid(st); camera(st, c, deg, 0, 12); st.label(fromFrame([-1, -.3], c, deg), 'camera', C.dim);
+        if (shown) legs(st, c, deg, pc, true);
+        axes(st, c, deg, null, 1); st.dot(p, C.acc, 'cusp');
+      };
+    },
+    input: {
+      type: 'number', answer: ans, unit: 'px',
+      why: x => slip(x, [
+        [2 * CX - ans, `Right depth, wrong side. The camera's own x arrow (red) points along tooth ${right}, and the cusp lies on its ${lr} side.`],
+        [proj(p), `You projected the tooth coordinates ${vec(p)} as they are. The formula needs the cusp as seen from the camera: ${Tn('cam', 'tooth')}, the inverse of the camera's pose.`],
+        [proj(sub(p, c)), `You subtracted the camera position, good, but kept the tooth-frame axes. The camera is turned: its depth axis runs along tooth ${look}.`],
+        [proj(fromFrame(p, c, deg)), `That applies the camera's own pose ${Tn('tooth', 'cam')} to the cusp. That matrix converts camera coordinates into tooth coordinates, the wrong direction. Use its inverse.`],
+        [ans - CX, 'That is f·X/Z alone. Add the principal point c<sub>x</sub> = 320.'],
+        [F * pc[1] / pc[0] + CX, 'The fraction is upside down. X (sideways) goes on top and the depth Z underneath.'],
+      ], 'Count from the camera, not from the grid origin: how many mm ahead along its blue z arrow (Z), and how many mm along its red x arrow (X, negative if against it)? Then u = 400·X/Z + 320.'),
+    },
+    explain: `Projection needs ${Tn('cam', 'tooth')} = ${Tn('tooth', 'cam', 1)}: subtract the camera's position, then measure along the camera's own axes. The cusp is ${pc[1]} mm ahead and ${Math.abs(pc[0])} mm to the camera's ${lr} side, so in the camera frame (X, Z) = ${vec(pc)} and u = 400·${par(pc[0])}/${pc[1]} + 320 = ${ans}.`,
+    after: st => { shown = true; st.redraw(); },
+  };
+};
+
+const pOrder = v => {
+  const tb = Tn('tooth', 'bur'), ct = Tn('cam', 'tooth');
+  const k = pick(v, [
+    { src: 'bur', what: `The bur tip is known in <b>bur</b> coordinates, and bur tracking gave ${Tn('cam', 'bur')} for this video frame.`,
+      tiles: [['div'], ['trap', Tn('bur', 'cam')], ['K'], ['frame', Tn('cam', 'bur')]], answer: [3, 0, 2],
+      trap: `${Tn('bur', 'cam')} converts camera coordinates into bur coordinates. The tip starts in bur coordinates and has to end up in the camera frame: ${Tn('cam', 'bur')}.`, say: `apply ${Tn('cam', 'bur')}` },
+    { src: 'board', what: `Calibration: a checkerboard corner is known in <b>board</b> coordinates, and you have the board's pose ${Tn('cam', 'board')} for this shot.`,
+      tiles: [['frame', Tn('cam', 'board')], ['K'], ['trap', Tn('board', 'cam')], ['div']], answer: [0, 3, 1],
+      trap: `${Tn('board', 'cam')} converts camera coordinates into board coordinates. The corner starts in board coordinates and has to end up in the camera frame: ${Tn('cam', 'board')}.`, say: `apply ${Tn('cam', 'board')}` },
+    { src: 'bur', what: `The bur tip is known in <b>bur</b> coordinates. For this video frame you have ${ct} and ${tb}.`,
+      tiles: [['frame', ct], ['div'], ['frame', tb], ['K'], ['trap', Tn('tooth', 'cam')]], answer: [2, 0, 1, 3],
+      trap: `${Tn('tooth', 'cam')} converts camera coordinates into tooth coordinates. The tip has to end up in the camera frame, so the last frame change is ${ct}.`,
+      chain: `The tip starts in bur coordinates, but ${ct} expects tooth coordinates. Apply ${tb} first: bur → tooth → camera.`, say: `apply ${tb}, then ${ct} (bur → tooth → camera)` },
+    { src: 'tooth', what: `Your renderer placed the camera in the tooth scene, so you know the camera's own pose ${Tn('tooth', 'cam')}. A vertex is in <b>tooth</b> coordinates.`,
+      tiles: [['K'], ['trap', Tn('tooth', 'cam')], ['div'], ['frame', Tn('tooth', 'cam', 1)]], answer: [3, 2, 0],
+      trap: `${Tn('tooth', 'cam')} is the camera's own pose: it converts camera coordinates into tooth coordinates. The vertex goes the other way, so apply the inverse, ${Tn('tooth', 'cam', 1)} = ${ct}.`, say: `apply ${Tn('tooth', 'cam', 1)} = ${ct}` },
+  ]);
+  return {
+    concept: 'ext-order',
+    prompt: `${k.what} <b>Order the steps that turn it into a pixel</b>, first step first. One tile is a trap.`,
+    input: {
+      type: 'order', tiles: k.tiles.map(tileHtml), answer: k.answer,
+      why: o => (k.chain && !o.includes(4) && o.indexOf(0) < o.indexOf(2) ? k.chain : orderWhy(k.tiles, k.src, k.trap)(o)),
+    },
+    explain: `First ${k.say} to reach the camera frame. Then divide X and Y by the depth Z. Then multiply by f and add (c<sub>x</sub>, c<sub>y</sub>). The steps are the same for any object: only the extrinsics change with what you project.`,
+  };
+};
+
+Reps.lesson({
+  id: 'u2-extrinsics',
+  title: 'From world to pixel',
+  learn: [camMoves, toCam, order, kMatrix, behind],
+  problems: [pProject, pClip, pK, pInverse, pOrder],
+});
+</script>
+</body>
+</html>

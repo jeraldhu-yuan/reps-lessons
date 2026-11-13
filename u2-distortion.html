@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<link rel="stylesheet" href="shared/reps.css">
+<script src="shared/reps.js"></script>
+</head>
+<body>
+<script>
+const { C, fmt, pick, add, sub } = Reps;
+// Images are drawn the way the camera sees them: x right, y DOWN, image centre in the middle of the stage.
+// Positions are normalized coordinates (x = X/Z, y = Y/Z); F turns them into px for the readouts.
+const F = 500, VIEW = [-1.1, 1.1, -0.82, 0.82];
+const sg = n => (n < 0 ? '−' : '') + fmt(Math.abs(n)), r2d = x => Math.round(x * 100) / 100;
+const pt = p => '(' + p.map(sg).join(', ') + ')';
+const im = p => [p[0], -p[1]];                                   // image coords (y down) -> stage coords (y up)
+const mulS = (p, s) => [p[0] * s, p[1] * s];
+const r2 = p => p[0] * p[0] + p[1] * p[1];
+const dot2 = (a, b) => a[0] * b[0] + a[1] * b[1], cross = (a, b) => a[0] * b[1] - a[1] * b[0];
+const dist = (p, k) => mulS(p, 1 + k * r2(p));                   // the one-coefficient radial model
+const lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+const seg = (a, b, k, n = 24) => Array.from({ length: n + 1 }, (_, i) => dist(lerp(a, b, i / n), k));   // image of a straight segment
+const near = (a, b, tol = 0.006) => Math.abs(a - b) < tol;
+const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+const path = (st, pts, color, w = 2, dash) => {
+  const g = st.g; g.beginPath(); g.setLineDash(dash || []); g.strokeStyle = color; g.lineWidth = w;
+  pts.forEach((p, i) => { const q = st.px(im(p)); if (i) g.lineTo(q[0], q[1]); else g.moveTo(q[0], q[1]); });
+  g.stroke(); g.setLineDash([]);
+};
+// a checkerboard's grid lines, 1.6 x 1.2 in normalized units, as a lens with coefficient k images them
+const board = (st, k, color, w = 1.5) => {
+  for (let i = -4; i <= 4; i++) path(st, seg([i * 0.2, -0.6], [i * 0.2, 0.6], k), color, w);
+  for (let j = -3; j <= 3; j++) path(st, seg([-0.8, j * 0.2], [0.8, j * 0.2], k), color, w);
+};
+const centreMark = (st, label, c = [0, 0], u = 0.05, dy = 16) => {
+  st.line(im(add(c, [-u, 0])), im(add(c, [u, 0])), C.dim, 2); st.line(im(add(c, [0, -u])), im(add(c, [0, u])), C.dim, 2);
+  if (label) st.label(im(c), 'centre', C.dim, [0, dy]);
+};
+// how far a curve strays from the straight chord between its ends
+const bowOf = pts => {
+  const a = pts[0], b = pts[pts.length - 1], d = sub(b, a), L = Math.hypot(d[0], d[1]);
+  return Math.max(...pts.map(p => Math.abs(cross(sub(p, a), d)) / L));
+};
+
+// ---- learn ----
+
+const farthest = v => {
+  const K = -0.25;
+  const k = pick(v, [
+    { marks: [[0, 0], [0.8, 0], [0.8, -0.6]], ask: 'Which marked corner lands farthest from its pinhole spot?', opts: [
+      { html: 'A', why: 'A sits on the image centre, where the lens axis meets the picture. It is the one point the lens does not move at all.' },
+      { html: 'B', why: 'B does move, but C is farther from the image centre, and the shift grows with that distance.' },
+      { html: 'C', correct: true },
+      { html: 'All move equally', why: 'Moving every point by the same amount would only slide the whole picture over and keep its lines straight. This warp depends on how far a point is from the image centre.' }] },
+    { marks: [[-0.8, 0.6], [0, 0], [0, -0.6]], ask: 'Which marked corner stays exactly on its pinhole spot?', opts: [
+      { html: 'A', why: 'A is the farthest of the three from the image centre, so it moves the most.' },
+      { html: 'B', correct: true },
+      { html: 'C', why: 'C is straight above the image centre but still some way from it. It slides down that vertical line toward the centre.' },
+      { html: 'None of them', why: 'One point does stay: the image centre. The shift grows with distance from the centre, and there the distance is zero.' }] },
+  ]);
+  const moved = k.marks.map(p => Math.round(Math.hypot(...sub(dist(p, K), p)) * F));
+  const list = moved.map((m, i) => `${'ABC'[i]} ${m} px`).join(', ');
+  let t = 0;
+  return {
+    concept: 'dist-radial',
+    prompt: `Your intraoral camera films a checkerboard held square to its wide lens. This is the picture the pinhole model predicts. The real lens warps it. <b>${k.ask}</b>`,
+    view: VIEW,
+    visual: st => {
+      st.draw = () => {
+        if (t) board(st, 0, C.ghost, 1);
+        board(st, K * t, C.fg, 1.5);
+        k.marks.forEach((p, i) => {
+          const q = dist(p, K * t);
+          if (t) { st.line([0, 0], im(mulS(p, 1.12)), C.dim, 1.5, [3, 5]); st.dot(im(p), C.ghost, null, 5); st.arrow(im(p), im(q), C.acc, 2.5); }
+          st.dot(im(q), C.acc); st.label(im(q), 'ABC'[i], C.acc, t ? [-11, -13] : [11, -11]);
+        });
+        st.readout(t === 1 ? `moved: ${list}` : '');
+      };
+    },
+    input: { type: 'choice', cols: 2, options: k.opts },
+    explain: `Every point slid toward the image centre along its own line through the centre (dashed). The slide is zero at the centre and grows with the distance r from it: here ${list} (at f = ${F} px). That is <b>radial distortion</b>, and it is why the pinhole model is most wrong near the border of a wide-lens picture.`,
+    after: st => st.animate(1200, x => { t = x; }),
+  };
+};
+
+const matchK = v => {
+  const target = pick(v, [-0.25, -0.15, -0.3]);
+  const TR = 0.9, KM = 0.3, yT = -0.98;                           // slider track (stage coords) and its range
+  let k = 0, shown = false;
+  return {
+    concept: 'dist-barrel',
+    prompt: `One number, <b>k1</b>, sets the warp. White is the model's checkerboard at the current k1. Yellow is what your wide intraoral lens recorded. <b>Drag left or right until white lies on yellow.</b>`,
+    view: [-1.1, 1.1, -1.2, 0.82],
+    visual: st => {
+      st.draw = () => {
+        board(st, target, C.acc, 3.5); board(st, k, C.fg, 1.5);
+        st.line([-TR, yT], [TR, yT], C.ghost, 3);
+        for (let i = -6; i <= 6; i++) st.line([i * TR / 6, yT - 0.035], [i * TR / 6, yT + 0.035], C.ghost, i % 6 ? 1 : 2);
+        st.label([-TR, yT - 0.13], '−0.3', C.dim); st.label([0, yT - 0.13], '0', C.dim); st.label([TR, yT - 0.13], '+0.3', C.dim);
+        st.dot([k / KM * TR, yT], C.fg, null, 10);
+        st.readout(`k1 = ${k > 0 ? '+' : ''}${sg(+k.toFixed(2))}` + (shown ? ` &nbsp; <span class="ca">${k < -0.001 ? 'barrel' : k > 0.001 ? 'pincushion' : 'pinhole'}</span>` : ''));
+      };
+      st.drag(w => { k = clamp(Math.round(w[0] / TR * KM / 0.05) * 0.05, -KM, KM); k = +k.toFixed(2); });
+    },
+    input: {
+      type: 'custom',
+      check: () => ({
+        correct: near(k, target, 0.001),
+        why: k === 0 ? 'At k1 = 0 the white grid is the plain pinhole picture, with straight lines. The yellow one is squeezed toward the centre. Drag sideways to change k1.'
+          : k > 0 ? 'Positive k1 pushes points away from the centre, so the white corners stretch outward. The yellow corners are pulled in. Go the other way.'
+          : k > target ? `Right direction, not far enough. At k1 = ${sg(k)} the white corners still sit outside the yellow ones.`
+          : `Right direction, too far. At k1 = ${sg(k)} the white corners are pulled in past the yellow ones.`,
+      }),
+      solve: wrong => { k = wrong ? 0.1 : target; },
+    },
+    explain: `You needed <b>k1 = ${sg(target)}</b>, a negative number. Negative k1 pulls points toward the centre, harder the farther out they are, so straight lines bow outward like the staves of a barrel: <b>barrel distortion</b>, the normal case for a wide lens like an intraoral camera. Positive k1 does the opposite (the sweep above): corners stretch out and lines bow inward, called <b>pincushion</b>.`,
+    after: st => { shown = true; st.animate(1600, x => { k = target + (0.25 - target) * Math.sin(Math.PI * x); }); },
+  };
+};
+
+const formula = v => {
+  const { p, i } = pick(v, [{ p: [0.8, 0.4], i: 0 }, { p: [0.6, 0.2], i: 0 }, { p: [-0.4, 0.2], i: 0 }, { p: [0.2, 0.6], i: 1 }]);
+  const K = -0.25, q = r2(p), s = 1 + K * q, d = mulS(p, s), nm = 'xy'[i], other = 'yx'[i];
+  let t = 0;
+  return {
+    concept: 'dist-model',
+    prompt: `The warp as a formula, on normalized coordinates x = X/Z, y = Y/Z: <b>x<sub>d</sub> = x·(1 + k1·r²)</b>, and the same for y, with r² = x² + y². This shank point is at <b>${pt(p)}</b>, so r² = ${fmt(q)}. With k1 = ${sg(K)}, <b>what is ${nm}<sub>d</sub>?</b>`,
+    view: VIEW,
+    visual: st => {
+      st.draw = () => {
+        const g = st.g, o = st.px([0, 0]);
+        for (const r of [0.25, 0.5, 0.75, 1]) { g.beginPath(); g.strokeStyle = C.line; g.lineWidth = 1; g.arc(o[0], o[1], r * st.s, 0, 7); g.stroke(); }
+        st.arrow([0, 0], im([0.3, 0]), C.x, 2); st.arrow([0, 0], im([0, 0.3]), C.y, 2);
+        st.label(im([0.3, 0]), 'x', C.x, [8, 0]); st.label(im([0, 0.3]), 'y', C.y, [0, 12]);
+        if (t) {
+          st.line([0, 0], im(mulS(p, 1.2)), C.dim, 1.5, [3, 5]); st.dot(im(p), C.ghost, null, 5);
+          const e = dist(p, K * t); st.arrow(im(p), im(e), C.acc, 2.5); st.dot(im(e), C.acc);
+        } else { st.dot(im(p), C.fg); st.label(im(p), pt(p), C.fg, [0, -17]); }
+        st.readout(t === 1 ? `${pt(p)} × ${fmt(s)} = <span class="ca">${pt(d)}</span>` : '');
+      };
+    },
+    input: {
+      type: 'number', answer: r2d(d[i]),
+      why: x => near(x, p[i]) ? `That is the pinhole position, unchanged. The lens multiplies it by the factor 1 + k1·r², which is below 1 here because k1 is negative.`
+        : near(x, s) ? `That is the factor 1 + k1·r² itself. It still has to multiply ${nm}.`
+        : near(x, p[i] * (2 - s)) ? 'You pushed the point outward. k1 is negative, so k1·r² is negative and the factor 1 + k1·r² is below 1: the point moves toward the centre.'
+        : near(x, p[i] * (1 + K * Math.sqrt(q))) ? 'You used r where the formula has r². Use r² = x² + y² as it is, with no square root.'
+        : near(x, p[i] * K * q) ? `That is only the shift, ${nm}·k1·r². The distorted position is the old position plus the shift: ${nm}·(1 + k1·r²).`
+        : near(x, d[1 - i]) ? `That is ${other}<sub>d</sub>. The factor is the same for both coordinates; multiply ${nm} by it.`
+        : near(x, p[i] * (1 + K * p[i] * p[i])) ? `You used only ${nm}² for r². The distance from the centre takes both coordinates: r² = x² + y².`
+        : near(x, -d[i]) ? 'Right size, wrong sign. The factor is positive, so the point stays on the same side of the centre.'
+        : `Two steps. First the factor: 1 + k1·r² = 1 + (${sg(K)})·(${fmt(q)}). Then multiply ${nm} = ${sg(p[i])} by it.`,
+    },
+    explain: `The factor is 1 + (${sg(K)})(${fmt(q)}) = ${fmt(s)}, so ${pt(p)} lands on <b>${pt(d)}</b>. One factor for both coordinates keeps the point on its line through the centre. It depends on r², so it is exactly 1 at the centre and falls away quickly toward the border. This happens to normalized coordinates, after the divide by Z and before K: the pixel is then u = f·x<sub>d</sub> + cx.`,
+    after: st => st.animate(1000, x => { t = x; }),
+  };
+};
+
+const straightEdge = v => {
+  const K = -0.25, LIM = [1, 0.72];
+  const k = pick(v, [
+    { A: [-0.6, -0.4], B: [0.5, -0.5], say: '', ask: 'Where must it lie for the yellow image to be exactly straight?', opts: [
+      { html: 'Close to the border', why: 'That is where it bows the most: far from the centre the pull changes fastest along the edge.' },
+      { html: 'Through the image centre', correct: true },
+      { html: 'Horizontal or vertical', why: 'Lay it horizontal away from the centre and read the bow. Its ends are farther from the centre than its middle, so they are pulled in more. Direction does not protect it; passing through the centre does.' },
+      { html: 'Nowhere', why: 'Put the handles on opposite sides of the centre mark so the edge passes through it. Each point then slides along the edge itself, and the bow reads 0.' }] },
+    { A: [-0.6, 0.4], B: [0.6, 0.4], say: ' It is horizontal now.', ask: 'When does a horizontal edge image exactly straight?', opts: [
+      { html: 'Always', why: 'This one is horizontal and its image bows. Its ends are farther from the centre than its middle, so barrel distortion pulls them in more. Being horizontal gives no protection.' },
+      { html: 'Only at the border', why: 'Near the border it bows the most: the edge is far from the centre, where the pull changes fastest.' },
+      { html: 'Never', why: 'Slide it until it passes through the centre mark: the bow reads 0. On that line every point slides along the edge itself.' },
+      { html: 'Only through the image centre', correct: true }] },
+  ]);
+  let A = k.A, B = k.B, grab = 0;
+  const ends = () => {                                            // the line through A and B, clipped to the picture
+    const d = sub(B, A); let t0 = -1e9, t1 = 1e9;
+    for (const j of [0, 1]) if (Math.abs(d[j]) > 1e-9) { const a = (-LIM[j] - A[j]) / d[j], b = (LIM[j] - A[j]) / d[j]; t0 = Math.max(t0, Math.min(a, b)); t1 = Math.min(t1, Math.max(a, b)); }
+    return [lerp(A, B, t0), lerp(A, B, t1)];
+  };
+  return {
+    concept: 'dist-lines',
+    prompt: `A straight edge in front of the lens. Grey dashes: its pinhole image. Yellow: what the lens records.${k.say} <b>Drag the two handles</b> and watch the bow. <b>${k.ask}</b>`,
+    view: [-1.1, 1.1, -0.76, 0.76],
+    visual: st => {
+      st.draw = () => {
+        const [e0, e1] = ends(), img = seg(e0, e1, K, 40), d = sub(B, A);
+        centreMark(st, true);
+        path(st, [e0, e1], C.ghost, 1.5, [5, 5]); path(st, img, C.acc, 3);
+        for (const h of [A, B]) { st.ring(im(h), C.fg, 11); st.dot(im(h), C.fg, null, 4); }
+        st.readout(`<div style="margin-bottom:10px">misses the centre by ${Math.round(Math.abs(cross(A, d)) / Math.hypot(d[0], d[1]) * F)} px &nbsp; bow ${Math.round(bowOf(img) * F)} px</div>`);
+      };
+      st.drag((w, ph) => {
+        const p = [clamp(Math.round(w[0] * 10) / 10, -0.9, 0.9), clamp(Math.round(-w[1] * 10) / 10, -0.6, 0.6)];
+        if (ph === 'down') grab = Math.hypot(w[0] - A[0], -w[1] - A[1]) < Math.hypot(w[0] - B[0], -w[1] - B[1]) ? 0 : 1;
+        const o = grab ? A : B;
+        if (Math.hypot(p[0] - o[0], p[1] - o[1]) < 0.25) return;  // keep the handles apart
+        if (grab) B = p; else A = p;
+      });
+    },
+    input: { type: 'choice', cols: 2, options: k.opts },
+    explain: 'Each point slides along its own line through the image centre. If the edge passes through the centre, that line is the edge itself: points slide along it and it stays straight. Any other edge has its ends farther from the centre than its middle; barrel distortion pulls the ends in more, so the image bows outward. Curved images of straight edges are how you see distortion, and how calibration measures k1.',
+  };
+};
+
+// total least squares line through a set of points
+const fitLine = pts => {
+  const n = pts.length, c = [0, 1].map(j => pts.reduce((a, p) => a + p[j], 0) / n);
+  let sxx = 0, sxy = 0, syy = 0;
+  for (const p of pts) { const dx = p[0] - c[0], dy = p[1] - c[1]; sxx += dx * dx; sxy += dx * dy; syy += dy * dy; }
+  const a = Math.atan2(2 * sxy, sxx - syy) / 2;
+  return { c, d: [Math.cos(a), Math.sin(a)] };
+};
+
+const shankFit = v => {
+  const K = -0.25, L = 0.75, W = 0.07, LIM = [1, 0.66];
+  const k = pick(v, [
+    { u: [0.8, -0.6], tip: [-0.35, 0.3], ask: 'What should the tracker do before fitting?', opts: [
+      { html: 'Fit first, fix the line after', why: 'Too late. The fit has already averaged a curve into one straight line, and which line you get depends on which stretch of edge was visible. k1 moves points: correct the pixels, then fit.' },
+      { html: 'Retune f until it fits', why: 'f scales the whole picture evenly about the centre. A pinhole camera with any f still images a straight edge as a straight line, so no f reproduces the curve.' },
+      { html: 'Undistort the edge pixels', correct: true },
+      { html: 'Add a fixed offset', why: 'Drag the shank and watch: the error changes with where it sits in the image, and the elastic mount moves it every frame. No single offset matches.' }] },
+    { u: [-0.8, -0.6], tip: [0.35, 0.3], ask: 'If the fit must use raw pixels, what makes it valid?', opts: [
+      { html: 'Smooth the edge pixels', why: 'Smoothing removes noise. The curve is not noise: it is the same in every frame at that image position, so it survives any smoothing.' },
+      { html: 'Project the model with k1', correct: true },
+      { html: 'Add a fixed offset', why: 'Drag the shank and watch: the error changes with where it sits in the image, and the elastic mount moves it every frame. No single offset matches.' },
+      { html: 'Fit a shorter piece of edge', why: 'A short piece looks straighter, but it is still shifted toward the centre and tilted against the pinhole view, and you throw away the pixels that pin the axis down.' }] },
+  ]);
+  const n = [-k.u[1], k.u[0]];
+  let tip = k.tip, kk = K, off = [0, 0], undone = false;
+  const edge = s => { const a = add(tip, mulS(n, s * W)); return [a, add(a, mulS(k.u, L))]; };
+  return {
+    concept: 'dist-undistort-first',
+    prompt: `Your tracker fits a straight line (dashed) to each raw shank edge (yellow). Grey: the shank as the pinhole model expects it. Cross: image centre. <b>Drag the shank toward the border</b> and watch the error. <b>${k.ask}</b>`,
+    view: [-1.1, 1.1, -0.7, 0.7],
+    visual: st => {
+      st.draw = () => {
+        centreMark(st, false);
+        const E = [edge(1), edge(-1)], raw = E.map(e => seg(e[0], e[1], kk, 20)), fits = raw.map(fitLine);
+        st.poly([E[0][0], E[0][1], E[1][1], E[1][0]].map(im), C.ghost, 'rgba(255,255,255,.05)', 1.5);
+        st.poly([...raw[0], ...[...raw[1]].reverse()].map(im), null, 'rgba(255,212,59,.14)');
+        for (const f of fits) { if (dot2(f.d, k.u) < 0) f.d = mulS(f.d, -1); path(st, [add(f.c, mulS(f.d, -L / 2 - 0.12)), add(f.c, mulS(f.d, L / 2 + 0.12))], C.fg, 1.5, [5, 4]); }
+        for (const r of raw) path(st, r, C.acc, 2.5);
+        st.dot(im(dist(tip, kk)), C.acc, null, 5); st.label(im(dist(tip, kk)), 'tip', C.acc, [-18 * k.u[0], -18 * k.u[1]]);
+        const ax = add(fits[0].d, fits[1].d), tilt = Math.acos(Math.min(1, dot2(ax, k.u) / Math.hypot(ax[0], ax[1]))) * 180 / Math.PI;
+        const tipErr = Math.hypot(...sub(dist(tip, kk), tip)) * F;
+        st.readout(`<div style="margin-bottom:10px">${undone ? 'undistorted: ' : 'fitted '}axis ${tilt.toFixed(1)}° off, tip ${Math.round(tipErr)} px off</div>`);
+      };
+      st.drag((w, ph) => {
+        const p = [w[0], -w[1]];
+        if (ph === 'down') off = sub(tip, p);
+        else tip = add(p, off).map((x, j) => clamp(x, -LIM[j] - Math.min(0, L * k.u[j]), LIM[j] - Math.max(0, L * k.u[j])));
+      });
+    },
+    input: { type: 'choice', cols: 2, options: k.opts },
+    explain: 'Line fits, PnP and projecting the STL all assume the pinhole model, where straight edges image as straight lines. A wide lens breaks that, worst near the border, which is where the shank enters the frame. So handle distortion first: <b>undistort the measured pixels</b> (they land on the grey view, and straight fits are right again), or put k1 into the projection you compare against. The error depends on where the shank sits in the image, and the elastic mount changes that every frame, so no fixed correction can stand in for it.',
+    after: st => { undone = true; st.animate(1400, x => { kk = K * (1 - x); }); },
+  };
+};
+
+// ---- problems ----
+
+const pRadial = v => {
+  const k = pick(v, [
+    { c: [5, 5], p: [9, 1], m: 0.75 }, { c: [6, 4], p: [2, 8], m: 0.75 }, { c: [4, 5], p: [8, 5], m: 0.75 }, { c: [5, 5], p: [7, 7], m: 1.5 }, { c: [6, 5], p: [2, 1], m: 0.75 },
+  ]);
+  const o = sub(k.p, k.c), a = add(k.c, mulS(o, k.m)), px = q => '(' + q.map(x => fmt(x * 100)).join(', ') + ')';
+  const inward = k.m < 1, pc = Math.round(Math.abs(1 - k.m) * 100);
+  let shown = false;
+  return {
+    concept: 'dist-radial',
+    prompt: `Pixel grid: origin top-left, 100 px per square. The image centre is (cx, cy) = <b>${px(k.c)}</b>. The pinhole model puts a marker corner at <b>${px(k.p)}</b> (grey). Radial distortion ${inward ? `pulls it <b>${pc}% closer to</b>` : `pushes it <b>${pc}% farther from</b>`} the centre. <b>Tap where it shows up.</b>`,
+    view: [-1.4, 10.5, -10.5, 1.05],
+    visual: st => {
+      st.draw = () => {
+        const g = st.g;
+        for (let i = 0; i <= 10; i++) { st.line([i, 0], [i, -10], i ? C.line : C.ghost, i ? 1 : 1.5); st.line([0, -i], [10, -i], i ? C.line : C.ghost, i ? 1 : 1.5); }
+        g.font = '11px ui-monospace, Menlo, monospace'; g.fillStyle = C.dim; g.textBaseline = 'middle';
+        for (let i = 0; i <= 10; i += 2) {
+          g.textAlign = 'center'; g.fillText(i < 10 ? i * 100 : 'u', ...st.px([i, 0.5]));
+          g.textAlign = 'right'; if (i) g.fillText(i < 10 ? i * 100 : 'v', ...st.px([-0.25, -i]));
+        }
+        centreMark(st, true, k.c, 0.3, o[1] > 0 ? -16 : 16);
+        if (shown) { st.line(im(k.c), im(add(k.c, mulS(o, Math.max(1.15, k.m + 0.15)))), C.dim, 1.5, [3, 5]); st.arrow(im(k.p), im(a), C.acc, 2.5); st.dot(im(a), C.acc); }
+        st.dot(im(k.p), C.ghost, null, 5); st.label(im(k.p), 'pinhole', C.ghost, inward ? [0, o[1] > 0 ? 17 : -17] : [11, -12]);
+      };
+    },
+    input: {
+      type: 'point', answer: im(a),
+      why: t => {
+        const q = [t[0], -t[1]], d = sub(q, k.c), same = (a, b) => near(a[0], b[0], 0.01) && near(a[1], b[1], 0.01);
+        return same(q, k.p) ? 'That is the pinhole spot itself. The lens moves the corner off it, along the line through the image centre.'
+          : same(q, k.c) ? 'That is the image centre. Only a point that starts at the centre stays there; this corner just moves part of the way along the line toward it.'
+          : near(cross(d, o), 0, 0.01) && dot2(d, o) > 0 ? ((dot2(d, o) > dot2(o, o)) === inward ? `Right line, wrong direction. "${inward ? 'Closer to' : 'Farther from'} the centre" means the offset from ${px(k.c)} gets ${inward ? 'shorter' : 'longer'}.`
+            : `You stayed on the line through the image centre, which is right, but the distance is off. The corner starts ${pt(o)} squares from the centre; ${inward ? `${pc}% closer leaves ${100 - pc}%` : `${pc}% farther makes ${100 + pc}%`} of that offset.`)
+          : near(cross(q, k.p), 0, 0.01) && near(cross(k.c, k.p), 0, 0.01) === false ? 'You moved it along the line to the pixel origin in the top-left corner. Radial distortion acts about the image centre (cx, cy): scale the offset from the centre, not the pixel coordinates.'
+          : (near(q[0], k.p[0], 0.01) || near(q[1], k.p[1], 0.01)) && o[0] && o[1] ? 'You changed only one coordinate, which moves the corner straight across or straight up. A radial move scales both offsets from the centre by the same factor, so the corner stays on the line through the centre.'
+          : 'That point is not on the line through the image centre and the pinhole spot. Radial distortion can only slide the corner along that line.';
+      },
+    },
+    explain: `Radial distortion slides a point along the line through the image centre (cx, cy). The corner starts ${pt(o)} squares from the centre; ${inward ? `${pc}% closer` : `${pc}% farther`} makes that ${pt(mulS(o, k.m))}, so it shows up at <b>${px(a)}</b>. The pixel origin in the corner plays no part.`,
+    after: st => { shown = true; st.redraw(); },
+  };
+};
+
+const pPixel = v => {
+  const k = pick(v, [
+    { P: [8, 6, 20], f: 500, c: [320, 240], k1: -0.4, i: 0 }, { P: [6, 8, 20], f: 500, c: [320, 240], k1: -0.4, i: 1 },
+    { P: [-6, 8, 10], f: 400, c: [320, 240], k1: -0.25, i: 0 }, { P: [4, 8, 20], f: 600, c: [400, 300], k1: -0.5, i: 1 },
+    { P: [10, 10, 20], f: 600, c: [400, 300], k1: 0.2, i: 0 },
+  ]);
+  const n = [k.P[0] / k.P[2], k.P[1] / k.P[2]], q = r2(n), s = 1 + k.k1 * q, d = mulS(n, s), i = k.i;
+  const uv = 'uv'[i], xy = 'xy'[i], cn = ['cx', 'cy'][i], pin = r2d(k.f * n[i] + k.c[i]), ans = r2d(k.f * d[i] + k.c[i]);
+  return {
+    concept: 'dist-model',
+    prompt: `A point on the bur is at <b>(X, Y, Z) = ${pt(k.P)} mm</b> in the camera frame. The camera has f = ${k.f} px, (cx, cy) = (${k.c.join(', ')}) and k1 = ${sg(k.k1)}. <b>Which pixel ${i ? 'row v' : 'column u'} does it land on?</b>`,
+    input: {
+      type: 'number', answer: ans, unit: 'px', tol: 0.05,
+      why: x => near(x, pin, 0.05) ? `That is the pinhole pixel, with no distortion. After the divide by Z, scale x and y by 1 + k1·r² before applying K.`
+        : near(x, k.f * d[i], 0.05) ? `You stopped at f·${xy}<sub>d</sub>. K also adds the principal point: ${uv} = f·${xy}<sub>d</sub> + ${cn}.`
+        : near(x, pin * s, 0.05) ? `You scaled the finished pixel coordinate, ${cn} included. Distortion acts on the normalized ${xy} = ${xy.toUpperCase()}/Z, before K; ${cn} is added afterwards.`
+        : near(x, k.f * n[i] * (2 - s) + k.c[i], 0.05) ? `You moved the point the wrong way. k1 = ${sg(k.k1)}, so the factor 1 + k1·r² is ${s < 1 ? 'below' : 'above'} 1 and the point moves ${s < 1 ? 'toward' : 'away from'} the image centre.`
+        : !near(q, 1) && near(x, k.f * n[i] * (1 + k.k1 * Math.sqrt(q)) + k.c[i], 0.05) ? 'You used r where the model has r². Use r² = x² + y² directly, with no square root.'
+        : near(x, k.f * d[1 - i] + k.c[1 - i], 0.05) ? `That is ${'vu'[i]}, the other pixel coordinate. The ${i ? 'row v uses y and cy' : 'column u uses x and cx'}.`
+        : near(x, k.f * d[i] + k.c[1 - i], 0.05) ? `You added ${['cy', 'cx'][i]}. The ${i ? 'row v' : 'column u'} takes ${cn}.`
+        : near(x, d[i], 0.005) ? `That is ${xy}<sub>d</sub>, still in normalized units. Apply K to get pixels: ${uv} = f·${xy}<sub>d</sub> + ${cn}.`
+        : `Follow the pipeline in order: divide by Z to get (x, y); r² = x² + y²; scale by 1 + k1·r²; then ${uv} = f·${xy}<sub>d</sub> + ${cn}. One of those steps went wrong.`,
+    },
+    explain: `Divide by Z: (x, y) = ${pt(n)}, so r² = ${fmt(q)}. Factor: 1 + (${sg(k.k1)})(${fmt(q)}) = ${fmt(s)}, giving ${xy}<sub>d</sub> = ${sg(d[i])}. Then K: ${uv} = ${k.f}·${d[i] < 0 ? `(${sg(d[i])})` : sg(d[i])} + ${k.c[i]} = <b>${fmt(ans)}</b>. The order is extrinsics, divide by Z, distort, then K. The pinhole model alone would have said ${fmt(pin)}.`,
+  };
+};
+
+const pSign = v => {
+  const k = pick(v, [
+    { grid: -0.3 },
+    { inward: true, say: 'The pinhole model predicts a checkerboard corner 400 px from the image centre. In the frame it is 372 px from the centre.', how: 'The corner ended up closer to the centre (372/400 = 0.93)' },
+    { grid: 0.25 },
+    { inward: false, say: 'The pinhole model predicts a checkerboard corner 300 px from the image centre. In the frame it is 318 px from the centre.', how: 'The corner ended up farther from the centre (318/300 = 1.06)' },
+    { inward: true, say: 'A straight ruler lies along the top border of the frame. Its image is an arch: the middle is nearest the border and both ends sag toward the image centre.', how: 'The ends of the ruler are farther from the centre than its middle and were pulled in more' },
+  ]);
+  const inward = k.grid ? k.grid < 0 : k.inward;
+  const how = k.how || (inward ? 'The corners are squeezed toward the centre and the grid lines bow outward' : 'The corners are stretched away from the centre and the grid lines bow inward');
+  const why = inward ? [null,
+    'Barrel is the right name, but the sign is flipped. Points ended up closer to the centre, so the factor 1 + k1·r² is below 1, and k1 must be negative.',
+    'The sign is right: points are pulled toward the centre. That makes straight lines bow outward, and that shape is called barrel. Pincushion is the outward stretch.',
+    'Both are flipped. Points ended up closer to the centre, so 1 + k1·r² is below 1 and k1 is negative; lines then bow outward like a barrel.',
+  ] : [
+    'Both are flipped. Points ended up farther from the centre, so 1 + k1·r² is above 1 and k1 is positive; the corners stretch out into a pincushion.',
+    'The sign is right: points are pushed outward. But then the corners stretch out and lines bow inward, and that shape is called pincushion. Barrel is the inward squeeze.',
+    'Pincushion is the right name, but the sign is flipped. Points ended up farther from the centre, so the factor 1 + k1·r² is above 1, and k1 must be positive.',
+    null];
+  const s = {
+    concept: 'dist-barrel',
+    prompt: k.grid ? 'A lens images a flat square grid, held square to it, like this. <b>Which describes the lens?</b>' : `${k.say} <b>Which describes the lens?</b>`,
+    input: { type: 'choice', cols: 2, options: ['k1 &lt; 0, barrel', 'k1 &gt; 0, barrel', 'k1 &lt; 0, pincushion', 'k1 &gt; 0, pincushion'].map((html, j) => why[j] ? { html, why: why[j] } : { html, correct: true }) },
+    explain: `${how}. With x<sub>d</sub> = x·(1 + k1·r²), that means the factor is ${inward ? 'below' : 'above'} 1, so <b>k1 is ${inward ? 'negative' : 'positive'}</b>. ${inward ? 'The squeeze is stronger far from the centre, so straight lines bow outward: <b>barrel</b>, the usual case for wide lenses such as an intraoral camera.' : 'The stretch is stronger far from the centre, so corners are drawn out and straight lines bow inward: <b>pincushion</b>.'}`,
+  };
+  if (k.grid) { s.view = VIEW; s.visual = st => { st.draw = () => { board(st, k.grid, C.fg, 1.5); centreMark(st, false); }; }; }
+  return s;
+};
+
+const pLines = v => {
+  const K = -0.3;
+  // four straight edges as the pinhole model images them; `ok` is the index of the one whose line passes through the centre
+  const k = pick(v, [
+    { ok: 1, segs: [[[-0.8, -0.5], [0.3, -0.5]], [[-0.6, 0.3], [0.6, -0.3]], [[0.8, -0.2], [0.8, 0.6]], [[-0.3, 0.45], [0.1, 0.6]]] },
+    { ok: 3, segs: [[[-0.7, -0.6], [-0.7, 0.5]], [[-0.3, 0.65], [0.8, 0.65]], [[0.1, -0.35], [0.5, -0.15]], [[0.3, 0.15], [0.9, 0.45]]] },
+    { ok: 0, segs: [[[0, -0.7], [0, 0.4]], [[0.7, -0.6], [0.7, 0.5]], [[-0.9, 0.6], [-0.2, 0.6]], [[-0.9, -0.5], [-0.3, 0.1]]] },
+    { ok: 2, segs: [[[-0.8, -0.5], [-0.3, 0.5]], [[0.3, -0.65], [0.9, -0.65]], [[-0.3, -0.6], [0.3, 0.6]], [[0.5, 0.1], [0.7, 0.5]]] },
+  ]);
+  const name = j => 'ABCD'[j];
+  const describe = ([a, b]) => a[1] === b[1] ? 'is horizontal' : a[0] === b[0] ? 'is vertical' : Math.hypot(b[0] - a[0], b[1] - a[1]) < 0.5 ? 'is short and bends only slightly' : 'runs at a slant';
+  let t = 0;
+  return {
+    concept: 'dist-lines',
+    prompt: 'Four straight instrument edges, drawn as the pinhole model images them; the cross is the image centre. The lens has barrel distortion. <b>Which edge is still exactly straight in the raw frame?</b>',
+    view: VIEW,
+    visual: st => {
+      st.draw = () => {
+        centreMark(st, false, [0, 0], 0.07);
+        k.segs.forEach(([a, b], j) => {
+          const d = sub(b, a), L = Math.hypot(d[0], d[1]), nrm = [-d[1] / L, d[0] / L], hit = t && j === k.ok;
+          if (t) path(st, [a, b], C.ghost, 1.5, [4, 5]);
+          path(st, seg(a, b, K * t), hit ? C.acc : C.fg, 3);
+          st.label(im(add(dist(lerp(a, b, 0.25), K * t), mulS(nrm, 0.11))), name(j), hit ? C.acc : C.fg);
+        });
+      };
+    },
+    input: { type: 'choice', cols: 2, options: k.segs.map((s, j) => j === k.ok ? { html: name(j), correct: true }
+      : { html: name(j), why: `${name(j)} ${describe(s)}, but extend it and it misses the image centre. Its points sit at different distances from the centre, each is pulled along its own line through the centre, and those pulls are not along ${name(j)}. It bows.` }) },
+    explain: `Radial distortion slides each point along its own line through the image centre. Edge <b>${name(k.ok)}</b> lies on such a line${k.segs[k.ok].some(p => !p[0] && !p[1]) || cross(...k.segs[k.ok]) === 0 && dot2(...k.segs[k.ok]) < 0 ? '' : ' (extend it: it runs through the centre mark)'}, so its points slide along the edge and it stays straight; only its length changes. Every other edge misses the centre and bows outward, whatever its direction or length.`,
+    after: st => st.animate(1200, x => { t = x; }),
+  };
+};
+
+const pFirst = v => {
+  const k = pick(v, [
+    { ctx: 'Bur tracking: the shank axis comes from straight lines fitted to the two shank edges, read with the pinhole model.', thing: 'fitted line',
+      m: 'find edge pixels in the raw frame', u: 'undistort those pixels', p: 'fit a straight line to each edge', late: 'bend the fitted lines with k1', off: 'subtract a fixed camera-to-bur offset',
+      offWhy: 'The camera hangs on an elastic mount, so there is no fixed camera-to-bur offset to subtract, and the lens error changes across the image anyway.', show: ['p', 'off', 'u', 'late', 'm'] },
+    { ctx: 'Ground truth: PnP gives the typodont pose from marker corners. PnP assumes the pinhole model.', thing: 'pose',
+      m: 'detect marker corners in the raw frame', u: 'undistort the corner pixels', p: 'solve PnP with K', late: 'apply k1 to the PnP pose', off: 'shift all corners by one fixed amount',
+      offWhy: 'The lens moves each corner by a different amount, depending on its distance from the image centre. No single shift corrects them all.', show: ['u', 'late', 'm', 'p', 'off'] },
+    { ctx: 'Registration: the tooth outline in the frame is matched to the STL outline rendered with a pinhole camera.', thing: 'pose',
+      m: 'trace the tooth outline in the raw frame', u: 'undistort the outline pixels', p: 'match it to the pinhole render', late: 'apply k1 to the matched pose', off: 'shift the outline by one fixed amount',
+      offWhy: 'The lens moves each outline point by a different amount, depending on its distance from the image centre. No single shift corrects them all.', show: ['off', 'p', 'late', 'm', 'u'] },
+    { ctx: 'Depth from width: a shank of known diameter D that looks w px wide is at Z = f·D / w, a pinhole formula.', thing: 'depth',
+      m: 'find both shank edges in the raw frame', u: 'undistort the edge pixels', p: 'measure w, then Z = f·D / w', late: 'multiply Z by 1 + k1·r²', off: 'add a fixed depth offset',
+      offWhy: 'The width error depends on where the shank sits in the image, and the elastic mount moves it every frame. No fixed depth offset matches.', show: ['late', 'm', 'p', 'u', 'off'] },
+  ]);
+  const answer = ['m', 'u', 'p'].map(r => k.show.indexOf(r));
+  return {
+    concept: 'dist-undistort-first',
+    prompt: `${k.ctx} The lens has barrel distortion, and k1 is known. <b>Build a working order from three tiles.</b> Two tiles do not belong.`,
+    input: {
+      type: 'order', tiles: k.show.map(r => k[r]), answer,
+      why: o => {
+        const r = o.map(j => k.show[j]);
+        return r.includes('off') ? k.offWhy
+          : r.includes('late') ? `k1 describes how image points move, not how a ${k.thing} changes. Once the pinhole step has run on warped pixels its result is already wrong, by an amount that depended on where those pixels were. Correct the pixels before that step.`
+          : r[0] !== 'm' ? 'Start with the measurement: nothing can be undistorted or fed to the pinhole step before the pixels are found in the raw frame.'
+          : `You ran the pinhole step ("${k.p}") on raw pixels and undistorted afterwards. That step assumes straight edges image straight, so it needs the undistorted pixels as its input.`;
+      },
+    },
+    explain: `<b>${['m', 'u', 'p'].map(r => k[r]).join(' → ')}</b>. Anything that assumes the pinhole model must be fed pixels with the distortion already removed (or have k1 built into its projection). Fixing the result afterwards does not work: distortion moves image points by an amount that depends on where they are, and a ${k.thing} no longer knows that.`,
+  };
+};
+
+Reps.lesson({
+  id: 'u2-distortion',
+  title: 'Lens distortion',
+  learn: [farthest, matchK, formula, straightEdge, shankFit],
+  problems: [pRadial, pPixel, pSign, pLines, pFirst],
+});
+</script>
+</body>
+</html>
