@@ -188,6 +188,7 @@ function lesson(def) {
   let saved = null;
   try { saved = JSON.parse(q.get('resume') || 'null'); } catch { /* start fresh */ }
   const seed = saved ? saved.seed : q.has('seed') ? +q.get('seed') : Math.floor(Math.random() * 1000);
+  const start = saved ? saved.start : q.get('start'); // 'problems' after a failed set: retry the problems alone
   const tag = gen => gen(0).concept;
   let items;
   if (mode === 'review') {
@@ -197,7 +198,7 @@ function lesson(def) {
       return from.length ? { gen: pick(seed, from), phase: 'review', v0: seed } : null;
     }).filter(Boolean);
   } else {
-    items = [...def.learn.map(gen => ({ gen, phase: 'learn', v0: 0 })), ...def.problems.map(gen => ({ gen, phase: 'problems', v0: seed }))];
+    items = [...(start === 'problems' ? [] : def.learn.map(gen => ({ gen, phase: 'learn', v0: 0 }))), ...def.problems.map(gen => ({ gen, phase: 'problems', v0: seed }))];
   }
   // A saved session only fits the lesson it was saved from: same screens, same kinds of answer.
   const shape = items.map(it => { const s = it.gen(0); return s.concept + ':' + s.input.type; }).join('|');
@@ -260,7 +261,7 @@ function lesson(def) {
       reveal(res, retry);
       if (retry) attempt++;
       else { done[k] = { v: it.v0 + attempt, value: s.input.type === 'custom' ? !ok : JSON.parse(JSON.stringify(inp.value())) }; attempt = 0; }
-      post('progress', { lessonId: def.id, mode, index: done.length, total: items.length, state: { seed, attempt, done, first, shape } });
+      post('progress', { lessonId: def.id, mode, index: done.length, total: items.length, state: { seed, attempt, done, first, shape, start } });
     };
   }
 
@@ -279,13 +280,18 @@ function lesson(def) {
     }
     const ok = mode === 'review' || score >= pass;
     main.innerHTML = `<div class="end"><div class="score ${ok ? 'pass' : 'fail'}">${correct}/${total}</div>
-      <p>${mode === 'review' ? 'Review cleared.' : ok ? 'Problem set passed.' : `Needs ${Math.round(pass * 100)}% to count. Run it again.`}</p>
+      <p>${mode === 'review' ? 'Review cleared.' : ok ? 'Problem set passed.' : `Needs ${Math.round(pass * 100)}% to count. Retry gives you a fresh problem set; ‹ steps back through this one.`}</p>
+      ${ok ? '' : '<p><button class="opt" id="again" style="display:inline-flex">Go through the lesson again</button></p>'}
       ${missed.length ? `<p style="color:var(--dim)">Queued for review:</p><ul>${missed.map(m => `<li>${m}</li>`).join('')}</ul>` : ''}</div>`;
     go.textContent = ok ? 'Done' : 'Retry'; go.disabled = false;
-    go.onclick = () => {
-      if (ok) return post('close', { lessonId: def.id });
-      const fresh = new URL(location.href); fresh.searchParams.delete('resume'); location.replace(fresh);
+    const restart = from => {
+      const fresh = new URL(location.href);
+      ['resume', 'seed', 'start'].forEach(k => fresh.searchParams.delete(k));
+      if (from) fresh.searchParams.set('start', from);
+      location.replace(fresh);
     };
+    go.onclick = () => ok ? post('close', { lessonId: def.id }) : restart('problems');
+    const again = document.getElementById('again'); if (again) again.onclick = () => restart();
   }
 
   window.Reps.session = api;

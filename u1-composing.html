@@ -138,38 +138,38 @@ const composeOrigin = v => {
   };
 };
 
-// 4. Build the inverse from moves, distractors included.
-const undoTiles = v => {
-  const { deg, t, view, lay } = pick(v, [
-    { deg: 90, t: [3, 0], view: [-2, 5, -1, 3], lay: [0, 1, 2, 3] },
-    { deg: -90, t: [0, 3], view: [-3, 4, -0.5, 3.5], lay: [3, 2, 1, 0] },
-    { deg: 90, t: [-2, 1], view: [-4, 3, -1, 3], lay: [1, 3, 0, 2] }]);
-  const dir = d => d === 90 ? 'counter-clockwise' : 'clockwise';
-  // 0 turn back, 1 slide again, 2 turn again, 3 slide back; lay is the order the tiles are shown in
-  const all = [`quarter turn ${dir(-deg)}`, `slide ${vec(t)}`, `quarter turn ${dir(deg)}`, `slide ${vec(neg(t))}`];
-  const [turnBack, slideAgain, turnAgain, slideBack] = [0, 1, 2, 3].map(j => lay.indexOf(j));
-  const inv = neg(q(t, -deg));
-  let u = 1;
+// 4. The inverse's slide. The turn back is worked; the learner supplies the slide that brings the point home.
+const undoSlide = v => {
+  const { deg, t } = pick(v, [{ deg: 90, t: [3, 0] }, { deg: -90, t: [0, 3] }, { deg: 90, t: [-2, 1] }, { deg: -90, t: [2, 1] }]);
+  const back = q(t, -deg), ans = neg(back);
+  let u = 0, shown = false;
   return {
     concept: 'rigid-inverse',
-    prompt: `The handpiece (yellow) was moved by T: ${turn(deg)} about the origin, <b>then</b> slide ${vec(t)}. <b>Build the two moves, in order, that put it back on the grey outline.</b>`,
-    view,
-    visual: st => { st.draw = () => { st.grid(); drawHP(st, deg, t, 'ts', 0, C.ghost, 'rgba(255,255,255,.06)'); drawHP(st, deg, t, 'ts', u, C.acc, 'rgba(255,212,59,.12)'); }; },
+    view: [-4, 4, -4, 4],
+    prompt: `T is ${turn(deg)}, <b>then</b> slide ${vec(t)}: it sent the origin to ${vec(t)}. T⁻¹ turns first too. Turning back swings that point to ${vec(back)}; then T⁻¹ slides by t′. <b>Tap where the arrow t′ must point to bring it home.</b>`,
+    visual: st => {
+      st.draw = () => {
+        st.grid();
+        st.line(t, back, C.dim, 1.5, [4, 4]);
+        st.dot(t, C.acc, 't', 6);
+        const now = [back[0] * (1 - u), back[1] * (1 - u)];
+        st.dot(back, C.ghost, u ? null : 'after turning back', 6);
+        if (shown) { st.arrow([0, 0], ans, C.acc, 3); st.label(ans, 't′', C.acc, [8, -8]); st.dot(now, C.fg, null, 5); }
+        st.dot([0, 0], C.fg, null, 3);
+      };
+    },
     input: {
-      type: 'order', tiles: lay.map(j => all[j]), answer: [slideBack, turnBack],
-      why: o => {
-        const has = j => o.includes(j);
-        return has(turnBack) && has(slideBack) ? `Right moves, wrong order. Try it in your head: turning back first swings the handpiece around the origin, and then sliding by ${vec(neg(t))} misses. The slide was done last, so it must be undone first.`
-          : has(slideAgain) && has(slideBack) ? 'Those two slides cancel each other, so nothing has been undone. The turn is still there, and so is the slide.'
-          : has(turnAgain) && has(turnBack) ? 'Those two turns cancel each other, so nothing has been undone. The slide is still there, and so is the turn.'
-          : has(slideAgain) && has(turnAgain) ? 'That is T a second time: it carries the handpiece further from the grey outline. Each step of T needs its opposite.'
-          : has(slideAgain) ? `Sliding by ${vec(t)} again pushes it further away. A slide by ${vec(t)} is undone by a slide by ${vec(neg(t))}.`
-          : has(turnAgain) ? `Turning ${dir(deg)} again adds a second quarter turn. A turn is undone by the same turn the other way.`
-          : 'Undo the most recent step first, like taking off shoes before socks: slide back, then turn back.';
+      type: 'point', answer: ans,
+      why: p => {
+        const same = a => p[0] === a[0] && p[1] === a[1];
+        return same(neg(t)) ? `That is −t = ${vec(neg(t))}. It undoes the slide only if you slide <i>first</i> and turn second. T⁻¹ is written turn-first, so by the time it slides, the point is no longer at ${vec(t)}: it has been swung to ${vec(back)}.`
+          : same(back) ? `That is where the point sits after the turn back. A slide by ${vec(back)} would push it twice as far out. The slide has to cancel it: point the arrow the opposite way.`
+          : same(t) ? `That is t, the slide T itself made. The inverse has to bring the point home, and by then the point is at ${vec(back)}.`
+          : `After the turn back the point is at ${vec(back)}. The slide t′ must carry it from there to (0, 0), so t′ is the exact opposite of ${vec(back)}.`;
       },
     },
-    explain: `Undo in reverse order: slide back, then turn back. In symbols p = Rᵀ(p′ − t) = Rᵀp′ − Rᵀt. Read that as a standard turn-then-slide transform and you get the inverse:<br><b>T⁻¹ = (Rᵀ, −Rᵀt)</b>.<br>Here that is ${turn(-deg)}, then slide ${vec(inv)}. Note the slide is <b>not</b> simply ${vec(neg(t))}.`,
-    after: st => st.animate(1500, t2 => { u = 1 - t2; }),
+    explain: `t′ = ${vec(ans)}: the opposite of t <i>after it has been turned back</i>. In symbols <b>T⁻¹ = (Rᵀ, −Rᵀt)</b>, and it is not (Rᵀ, −t). The other way to say the same undo is slide-first: slide ${vec(neg(t))}, then turn back. Both are right; only the turn-first form chains with other transforms.`,
+    after: st => { shown = true; st.animate(1200, k => { u = k; }); },
   };
 };
 
@@ -312,7 +312,7 @@ const pHom = v => {
 Reps.lesson({
   id: 'u1-composing',
   title: 'Composing transforms',
-  learn: [orderMatters, applyWorked, composeOrigin, undoTiles, homogeneous],
+  learn: [orderMatters, applyWorked, composeOrigin, undoSlide, homogeneous],
   problems: [pApply, pCompose, pInverse, pMount, pHom],
 });
 </script>
