@@ -224,17 +224,24 @@ const pCompose = v => {
   const RA = Rm(k.dA), RB = Rm(k.dB), i = k.i, RtB = apply(RA, k.tB), ans = add(RtB, k.tA);
   return {
     concept: 'compose-formula',
-    prompt: `Measured from the tooth, the bur makes two moves: first B, then A.<br>R<sub>B</sub> = ${mat(RB)}, t<sub>B</sub> = ${vec(k.tB)}<br>R<sub>A</sub> = ${mat(RA)}, t<sub>A</sub> = ${vec(k.tA)}<br><b>What is the ${xy(i)}-component of the net move's translation?</b>`,
+    prompt: `Measured from the tooth, the bur makes two moves: first B, then A.<br>R<sub>B</sub> = ${mat(RB)}, t<sub>B</sub> = ${vec(k.tB)}<br>R<sub>A</sub> = ${mat(RA)}, t<sub>A</sub> = ${vec(k.tA)}<br><b>Find the ${xy(i)}-component of the net move's translation, in two steps.</b>`,
     input: {
-      type: 'number', answer: ans[i],
-      why: x => diag(x, [
-        [k.tA[i] + k.tB[i], `That is t<sub>A</sub> + t<sub>B</sub>. Translations do not simply add: B's slide happens before A's turn, so A's turn swings it.`],
-        [add(apply(RB, k.tA), k.tB)[i], `That is R<sub>B</sub>·t<sub>A</sub> + t<sub>B</sub>, the net move for A first, then B. Here B goes first, so the <i>later</i> rotation R<sub>A</sub> acts on the <i>earlier</i> slide t<sub>B</sub>.`],
-        [RtB[i], `That is R<sub>A</sub>·t<sub>B</sub> alone. A's own slide t<sub>A</sub> = ${vec(k.tA)} is still missing.`],
-        [add(apply(T(RA), k.tB), k.tA)[i], `R<sub>A</sub> turned t<sub>B</sub> the wrong way: you used its rows where the columns belong. R<sub>A</sub>·t<sub>B</sub> = ${vec(RtB)}.`],
-        [add(apply(RB, k.tB), k.tA)[i], `You turned t<sub>B</sub> with R<sub>B</sub>, its own rotation. B's turn comes before B's slide and does not touch it. Only A's turn, which comes later, does.`],
-        [ans[1 - i], `That is the ${xy(1 - i)}-component. The question asks for ${xy(i)}.`],
-      ], `Check by tracking the tooth origin, since the net translation is where it ends up. B sends it to t<sub>B</sub> = ${vec(k.tB)}. Then A turns that point with R<sub>A</sub> and adds t<sub>A</sub>.`),
+      type: 'steps', steps: [
+        { label: `${xy(i)}-component of the earlier slide, after the later turn has acted on it`, answer: RtB[i],
+          why: x => diag(x, [
+            [k.tB[i], `That is t<sub>B</sub> untouched. B's slide happens before A's turn, so A's turn swings it: you need R<sub>A</sub>·t<sub>B</sub>.`],
+            [apply(RB, k.tB)[i], `You turned t<sub>B</sub> with R<sub>B</sub>, its own rotation. B's turn comes before B's slide and does not touch it. Only A's turn, which comes later, does.`],
+            [apply(T(RA), k.tB)[i], `R<sub>A</sub> turned t<sub>B</sub> the wrong way: you used its rows where the columns belong. R<sub>A</sub>·t<sub>B</sub> = ${vec(RtB)}.`],
+            [apply(RB, k.tA)[i], `That is R<sub>B</sub>·t<sub>A</sub>, which belongs to A first, then B. Here B goes first, so the <i>later</i> rotation R<sub>A</sub> acts on the <i>earlier</i> slide t<sub>B</sub>.`],
+            [RtB[1 - i], `That is the ${xy(1 - i)}-component of R<sub>A</sub>·t<sub>B</sub>. This step asks for ${xy(i)}.`],
+          ], `The earlier slide is t<sub>B</sub> = ${vec(k.tB)} and the later turn is R<sub>A</sub>. Multiply: each row of R<sub>A</sub> dotted with t<sub>B</sub>.`) },
+        { label: `${xy(i)}-component of the net translation`, answer: ans[i],
+          why: x => diag(x, [
+            [RtB[i], `That is still R<sub>A</sub>·t<sub>B</sub> from step 1. A's own slide t<sub>A</sub> = ${vec(k.tA)} has to be added.`],
+            [RtB[i] + k.tB[i], `You added t<sub>B</sub> again. The slide still to add is A's own, t<sub>A</sub> = ${vec(k.tA)}.`],
+            [RtB[i] - k.tA[i], `You subtracted t<sub>A</sub>. A slides after it turns, so its slide is added.`],
+          ], `Step 1 gave the turned slide. The net translation adds A's own slide to it: R<sub>A</sub>·t<sub>B</sub> + t<sub>A</sub>.`) },
+      ],
     },
     explain: `Net translation = R<sub>A</sub>·t<sub>B</sub> + t<sub>A</sub> = ${vec(RtB)} + ${vec(k.tA)} = ${vec(ans)}. It is where B-then-A sends the origin. A bur trajectory relative to the tooth is a chain of such steps, each composed onto the ones before it.`,
   };
@@ -246,16 +253,22 @@ const pInverse = v => {
   const R = Rcs(k.c, k.s), i = k.i, Rtt = apply(T(R), k.t).map(x => +x.toFixed(2)), ans = neg(Rtt);
   return {
     concept: 'rigid-inverse',
-    prompt: `T = (R, t) with R = ${mat(R)} and t = ${vec(k.t)}. Its inverse, written in the same turn-then-slide form, is (Rᵀ, t′). <b>What is the ${xy(i)}-component of t′?</b>`,
+    prompt: `T = (R, t) with R = ${mat(R)} and t = ${vec(k.t)}. Its inverse, written in the same turn-then-slide form, is (Rᵀ, t′). <b>Find the ${xy(i)}-component of t′, in two steps.</b>`,
     input: {
-      type: 'number', answer: ans[i],
-      why: x => diag(x, [
-        [-k.t[i], `That is −t. Sliding back by −t is the <i>first</i> step of undoing T. In turn-then-slide form the turn Rᵀ comes first, so the slide must be turned as well: t′ = −Rᵀt.`],
-        [Rtt[i], `That is Rᵀt = ${vec(Rtt)} without the minus sign. The inverse has to slide <i>back</i>: t′ = −Rᵀt.`],
-        [-apply(R, k.t)[i], `That is −R·t. The inverse turns backwards, so t is turned by Rᵀ (rows and columns of R swapped), not by R.`],
-        [k.t[i], `That is t itself. The inverse must send the point t back to the origin, and neither its turn nor its slide is the same as T's.`],
-        [ans[1 - i], `That is the ${xy(1 - i)}-component of t′. The question asks for ${xy(i)}.`],
-      ], `Check any candidate t′ this way: T sends the origin to t, so T⁻¹ must bring t back to the origin. That means Rᵀt + t′ = (0, 0), with Rᵀ = ${mat(T(R))}.`),
+      type: 'steps', steps: [
+        { label: `${xy(i)}-component of t after it is turned back`, answer: Rtt[i],
+          why: x => diag(x, [
+            [k.t[i], `That is t untouched. The inverse turns first, so t is turned back before anything is cancelled: you need Rᵀt.`],
+            [apply(R, k.t)[i], `That is R·t. The inverse turns backwards, so t is turned by Rᵀ (rows and columns of R swapped), not by R.`],
+            [-Rtt[i], `That is already −Rᵀt, the final answer. This step asks only for the turned-back t.`],
+            [Rtt[1 - i], `That is the ${xy(1 - i)}-component of Rᵀt. This step asks for ${xy(i)}.`],
+          ], `Turning back means multiplying by Rᵀ = ${mat(T(R))}: each of its rows dotted with t = ${vec(k.t)}.`) },
+        { label: `${xy(i)}-component of t′`, answer: ans[i],
+          why: x => diag(x, [
+            [Rtt[i], `That is Rᵀt from step 1, without the minus sign. The inverse has to slide <i>back</i>: t′ = −Rᵀt.`],
+            [-k.t[i], `That is −t. Sliding back by −t works only if you slide first and turn second. In turn-first form the slide is the turned-back t, negated: t′ = −Rᵀt.`],
+          ], `t′ must cancel the turned-back t from step 1, so it is the same number with the opposite sign.`) },
+      ],
     },
     explain: `T⁻¹ = (Rᵀ, −Rᵀt). Rᵀ = ${mat(T(R))}, so Rᵀt = ${vec(Rtt)} and t′ = ${vec(ans)}. Check: T sends the origin to t, and T⁻¹ must bring t back: Rᵀt + t′ = (0, 0).`,
   };

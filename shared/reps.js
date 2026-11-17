@@ -141,6 +141,30 @@ const inputs = {
       solution: wrong => inp.answer + (wrong ? 7 : 0),
     };
   },
+  // a multi-step calculation: one number per step, entered in order, checked together
+  steps(inp, host, ready) {
+    const rows = inp.steps.map((st, k) => {
+      const row = el('div', 'step'), f = el('input'), pm = el('button', 'opt', '±');
+      f.inputMode = 'decimal'; f.placeholder = '?'; f.autocomplete = 'off';
+      pm.onclick = () => { f.value = f.value.startsWith('-') ? f.value.slice(1) : '-' + f.value; f.oninput(); };
+      const line = el('div', 'num'); line.append(f); if (st.unit) line.append(el('span', null, st.unit)); line.append(pm);
+      row.append(el('div', 'steplabel', `<b>${k + 1}.</b> ${st.label}`), line); host.append(row);
+      return { f, pm, st };
+    });
+    const val = r => parseFloat(r.f.value.replace(',', '.').replace('−', '-'));
+    const good = r => Math.abs(val(r) - r.st.answer) <= (r.st.tol ?? 0.011);
+    rows.forEach(r => { r.f.oninput = () => ready(rows.every(x => !isNaN(val(x)))); });
+    return {
+      value: () => rows.map(val), set: xs => { rows.forEach((r, k) => { r.f.value = xs[k]; }); rows[0].f.oninput(); },
+      check: () => {
+        const k = rows.findIndex(r => !good(r)); if (k < 0) return { correct: true };
+        const r = rows[k], named = r.st.why && r.st.why(val(r));
+        return { correct: false, why: `<b>Step ${k + 1} is where it goes wrong.</b> ` + (named || `Redo "${r.st.label}" on its own before going on.`) };
+      },
+      lock() { rows.forEach(r => { r.f.disabled = r.pm.disabled = true; r.f.classList.add(good(r) ? 'right' : 'wrong'); r.f.blur(); }); },
+      solution: wrong => inp.steps.map((st, k) => st.answer + (wrong && k === inp.steps.length - 1 ? 7 : 0)),
+    };
+  },
   // tap a point on the stage; snaps to inp.snap (default 1)
   point(inp, host, ready, stage) {
     let p = null; const snap = inp.snap ?? 1;
@@ -182,6 +206,25 @@ const inputs = {
   },
 };
 
+// ---------- scratchpad: a sheet to write working on with a finger; wiped on every new screen ----------
+function scratchpad() {
+  const box = document.getElementById('pad'), cv = box.querySelector('canvas'), g = cv.getContext('2d');
+  const fit = () => {
+    const r = cv.getBoundingClientRect(), d = devicePixelRatio || 1;
+    cv.width = r.width * d; cv.height = r.height * d; g.scale(d, d);
+    g.strokeStyle = C.fg; g.lineWidth = 2.2; g.lineCap = g.lineJoin = 'round';
+  };
+  const at = e => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  let down = false;
+  cv.addEventListener('pointerdown', e => { down = true; cv.setPointerCapture(e.pointerId); g.beginPath(); g.moveTo(...at(e)); });
+  cv.addEventListener('pointermove', e => { if (down) { g.lineTo(...at(e)); g.stroke(); } });
+  cv.addEventListener('pointerup', () => { down = false; }); cv.addEventListener('pointercancel', () => { down = false; });
+  const show = on => { box.hidden = !on; document.body.classList.toggle('padopen', on); if (on) fit(); };
+  document.getElementById('scratch').onclick = () => show(box.hidden);
+  document.getElementById('wipe').onclick = fit;
+  return { reset: () => show(false) };
+}
+
 // ---------- flow ----------
 function lesson(def) {
   const mode = q.get('mode') === 'review' ? 'review' : 'lesson';
@@ -205,7 +248,8 @@ function lesson(def) {
   if (saved && saved.shape !== shape) saved = null;
 
   document.title = def.title;
-  document.body.innerHTML = '<header><div class="bar"><i></i></div><div class="phase"><button id="back" aria-label="Previous screen">‹</button><span></span></div></header><main></main><footer><button id="go"></button></footer>';
+  document.body.innerHTML = '<header><div class="bar"><i></i></div><div class="phase"><button id="back" aria-label="Previous screen">‹</button><span></span><button id="scratch" aria-label="Scratchpad">✎</button></div></header><main></main><div id="pad" hidden><canvas></canvas><button id="wipe">Clear</button></div><footer><button id="go"></button></footer>';
+  const pad = scratchpad();
   const main = document.querySelector('main'), go = document.getElementById('go'), back = document.getElementById('back');
   const bar = document.querySelector('.bar i'), phaseEl = document.querySelector('.phase span');
   const done = saved ? saved.done : [];   // settled items: { v: variant shown, value: the answer given }
@@ -225,7 +269,7 @@ function lesson(def) {
     phaseEl.textContent = it.phase === 'learn' ? def.title : it.phase === 'review' ? 'Review' : `Problem ${k - firstProblem + 1} of ${def.problems.length} · no hints`;
     back.hidden = k <= floor();
     back.onclick = () => show(k - 1);
-    main.innerHTML = ''; main.scrollTop = 0;
+    main.innerHTML = ''; main.scrollTop = 0; pad.reset();
     main.append(el('div', 'prompt', s.prompt));
     let stage = null;
     if (s.visual) {
@@ -266,7 +310,7 @@ function lesson(def) {
   }
 
   function end() {
-    bar.style.width = '100%'; phaseEl.textContent = ''; api.cur = null;
+    bar.style.width = '100%'; phaseEl.textContent = ''; api.cur = null; pad.reset();
     back.hidden = !items.length;
     back.onclick = () => show(items.length - 1);
     const graded = first.filter((_, k) => items[k].phase !== 'learn');
