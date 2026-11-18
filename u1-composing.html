@@ -251,26 +251,28 @@ const pCompose = v => {
 const pInverse = v => {
   const k = pick(v, [{ c: 0, s: 1, t: [2, 1], i: 1 }, { c: 0.8, s: 0.6, t: [10, 5], i: 0 }, { c: 0, s: -1, t: [4, 1], i: 1 }, { c: 0.6, s: 0.8, t: [15, 5], i: 1 }, { c: 0, s: 1, t: [1, 3], i: 0 }, { c: 0.8, s: -0.6, t: [5, 10], i: 0 }]);
   const R = Rcs(k.c, k.s), i = k.i, Rtt = apply(T(R), k.t).map(x => +x.toFixed(2)), ans = neg(Rtt);
+  // Use identical numeric answers, input type, seed mapping and screen index so saved sessions still replay.
+  const transfer = Math.floor(v / 6) % 2 === 1;
   return {
     concept: 'rigid-inverse',
-    prompt: `T = (R, t) with R = ${mat(R)} and t = ${vec(k.t)}. Its inverse, written in the same turn-then-slide form, is (Rᵀ, t′). <b>Find the ${xy(i)}-component of t′, in two steps.</b>`,
+    prompt: transfer ? `A scan maps tooth coordinates into camera coordinates: rotate by ${mat(R)}, then add ${vec(k.t)} mm. A landmark sits at the camera origin. <b>Locate it along the tooth’s ${xy(i)}-axis.</b>` : `T = (R, t) with R = ${mat(R)} and t = ${vec(k.t)}. Its inverse, written in the same turn-then-slide form, is (Rᵀ, t′). <b>Find the ${xy(i)}-component of t′, in two steps.</b>`,
     input: {
       type: 'steps', steps: [
-        { label: `${xy(i)}-component of t after it is turned back`, answer: Rtt[i],
+        { label: transfer ? `Camera origin → tooth origin, along tooth ${xy(i)}` : `${xy(i)}-component of t after it is turned back`, answer: Rtt[i],
           why: x => diag(x, [
             [k.t[i], `That is t untouched. The inverse turns first, so t is turned back before anything is cancelled: you need Rᵀt.`],
             [apply(R, k.t)[i], `That is R·t. The inverse turns backwards, so t is turned by Rᵀ (rows and columns of R swapped), not by R.`],
             [-Rtt[i], `That is already −Rᵀt, the final answer. This step asks only for the turned-back t.`],
             [Rtt[1 - i], `That is the ${xy(1 - i)}-component of Rᵀt. This step asks for ${xy(i)}.`],
           ], `Turning back means multiplying by Rᵀ = ${mat(T(R))}: each of its rows dotted with t = ${vec(k.t)}.`) },
-        { label: `${xy(i)}-component of t′`, answer: ans[i],
+        { label: transfer ? `Landmark coordinate along tooth ${xy(i)} (mm)` : `${xy(i)}-component of t′`, answer: ans[i],
           why: x => diag(x, [
             [Rtt[i], `That is Rᵀt from step 1, without the minus sign. The inverse has to slide <i>back</i>: t′ = −Rᵀt.`],
             [-k.t[i], `That is −t. Sliding back by −t works only if you slide first and turn second. In turn-first form the slide is the turned-back t, negated: t′ = −Rᵀt.`],
           ], `t′ must cancel the turned-back t from step 1, so it is the same number with the opposite sign.`) },
       ],
     },
-    explain: `T⁻¹ = (Rᵀ, −Rᵀt). Rᵀ = ${mat(T(R))}, so Rᵀt = ${vec(Rtt)} and t′ = ${vec(ans)}. Check: T sends the origin to t, and T⁻¹ must bring t back: Rᵀt + t′ = (0, 0).`,
+    explain: transfer ? `The camera origin lies opposite the displacement from camera origin to tooth origin. In tooth axes that displacement is ${vec(Rtt)}, so the landmark is ${vec(ans)} mm. Check it forward: R times that point gives −t; adding t gives camera (0, 0).` : `T⁻¹ = (Rᵀ, −Rᵀt). Rᵀ = ${mat(T(R))}, so Rᵀt = ${vec(Rtt)} and t′ = ${vec(ans)}. Check: T sends the origin to t, and T⁻¹ must bring t back: Rᵀt + t′ = (0, 0).`,
   };
 };
 
