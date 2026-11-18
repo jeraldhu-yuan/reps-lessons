@@ -206,25 +206,6 @@ const inputs = {
   },
 };
 
-// ---------- scratchpad: a sheet to write working on with a finger; wiped on every new screen ----------
-function scratchpad() {
-  const box = document.getElementById('pad'), cv = box.querySelector('canvas'), g = cv.getContext('2d');
-  const fit = () => {
-    const r = cv.getBoundingClientRect(), d = devicePixelRatio || 1;
-    cv.width = r.width * d; cv.height = r.height * d; g.scale(d, d);
-    g.strokeStyle = C.fg; g.lineWidth = 2.2; g.lineCap = g.lineJoin = 'round';
-  };
-  const at = e => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
-  let down = false;
-  cv.addEventListener('pointerdown', e => { down = true; cv.setPointerCapture(e.pointerId); g.beginPath(); g.moveTo(...at(e)); });
-  cv.addEventListener('pointermove', e => { if (down) { g.lineTo(...at(e)); g.stroke(); } });
-  cv.addEventListener('pointerup', () => { down = false; }); cv.addEventListener('pointercancel', () => { down = false; });
-  const show = on => { box.hidden = !on; document.body.classList.toggle('padopen', on); if (on) fit(); };
-  document.getElementById('scratch').onclick = () => show(box.hidden);
-  document.getElementById('wipe').onclick = fit;
-  return { reset: () => show(false) };
-}
-
 // ---------- flow ----------
 function lesson(def) {
   const mode = q.get('mode') === 'review' ? 'review' : 'lesson';
@@ -248,8 +229,7 @@ function lesson(def) {
   if (saved && saved.shape !== shape) saved = null;
 
   document.title = def.title;
-  document.body.innerHTML = '<header><div class="bar"><i></i></div><div class="phase"><button id="back" aria-label="Previous screen">‹</button><span></span><button id="scratch" aria-label="Scratchpad">✎</button></div></header><main></main><div id="pad" hidden><canvas></canvas><button id="wipe">Clear</button></div><footer><button id="go"></button></footer>';
-  const pad = scratchpad();
+  document.body.innerHTML = '<header><div class="bar"><i></i></div><div class="phase"><button id="back" aria-label="Previous screen">‹</button><span></span><button id="ask" aria-label="Ask a tutor" hidden>Ask</button></div></header><main></main><footer><button id="go"></button></footer>';
   const main = document.querySelector('main'), go = document.getElementById('go'), back = document.getElementById('back');
   const bar = document.querySelector('.bar i'), phaseEl = document.querySelector('.phase span');
   const done = saved ? saved.done : [];   // settled items: { v: variant shown, value: the answer given }
@@ -259,6 +239,17 @@ function lesson(def) {
   // While a problem is unanswered the learn screens stay closed: problems test recall, not lookup.
   const floor = () => !ended && done.length < items.length && items[done.length].phase === 'problems' ? firstProblem : 0;
   const api = { log, def, mode, items, cur: null };
+  // Plain text for a tutor outside the app: matrices become rows, everything else loses its markup.
+  const plain = h => {
+    const d = el('div', null, h || '');
+    d.querySelectorAll('.mat').forEach(m => {
+      const n = +(m.style.gridTemplateColumns.match(/repeat\((\d+)/) || [0, 1])[1], c = [...m.children].map(x => x.textContent);
+      m.replaceWith(' [' + c.map((x, k) => (k % n ? '' : k ? '; ' : '') + x + (k % n < n - 1 ? ' ' : '')).join('') + '] ');
+    });
+    d.querySelectorAll('br').forEach(x => x.replaceWith(' '));
+    return d.textContent.replace(/\s+/g, ' ').trim();
+  };
+  const askBtn = document.getElementById('ask'), canAsk = q.get('ask') === '1'; // the app says whether it can hand off
 
   post('lessonStarted', { lessonId: def.id, mode, total: items.length, resumed: !!saved });
 
@@ -269,7 +260,16 @@ function lesson(def) {
     phaseEl.textContent = it.phase === 'learn' ? def.title : it.phase === 'review' ? 'Review' : `Problem ${k - firstProblem + 1} of ${def.problems.length} · no hints`;
     back.hidden = k <= floor();
     back.onclick = () => show(k - 1);
-    main.innerHTML = ''; main.scrollTop = 0; pad.reset();
+    // A tutor is on hand while learning, and after a problem is answered; never while a problem is open.
+    let outcome = null;
+    const offerAsk = () => { askBtn.hidden = !canAsk || (it.phase !== 'learn' && !outcome); };
+    askBtn.onclick = () => post('ask', {
+      lessonId: def.id, title: def.title, concept: s.concept, phase: it.phase, question: plain(s.prompt),
+      choices: (s.input.options || s.input.tiles || s.input.steps || []).map(o => plain(o.html || o.label || o)),
+      outcome, takeaway: plain(s.explain),
+    });
+    offerAsk();
+    main.innerHTML = ''; main.scrollTop = 0;
     main.append(el('div', 'prompt', s.prompt));
     let stage = null;
     if (s.visual) {
@@ -288,6 +288,7 @@ function lesson(def) {
       const fb = el('div', 'fb' + (ok ? '' : ' bad'), `<div class="tag">${ok ? 'Correct' : 'Not quite'}</div>${body}`);
       // with a visual, feedback sits right under it so the reveal animation stays in view
       if (stage) host.before(fb); else main.append(fb);
+      outcome = { correct: ok, feedback: plain(body) }; offerAsk();
       fb.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       if (!retry && s.after && stage) s.after(stage);
       go.textContent = retry ? 'Try a variant' : 'Continue'; go.disabled = false;
@@ -310,7 +311,7 @@ function lesson(def) {
   }
 
   function end() {
-    bar.style.width = '100%'; phaseEl.textContent = ''; api.cur = null; pad.reset();
+    bar.style.width = '100%'; phaseEl.textContent = ''; api.cur = null; askBtn.hidden = true;
     back.hidden = !items.length;
     back.onclick = () => show(items.length - 1);
     const graded = first.filter((_, k) => items[k].phase !== 'learn');
