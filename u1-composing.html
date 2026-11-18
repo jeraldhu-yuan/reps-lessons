@@ -146,7 +146,7 @@ const undoSlide = v => {
   return {
     concept: 'rigid-inverse',
     view: [-4, 4, -4, 4],
-    prompt: `T is ${turn(deg)}, <b>then</b> slide ${vec(t)}: it sent the origin to ${vec(t)}. T⁻¹ turns first too. Turning back swings that point to ${vec(back)}; then T⁻¹ slides by t′. <b>Tap where the arrow t′ must point to bring it home.</b>`,
+    prompt: `A marker started at home (0, 0). After a turn and slide it is at ${vec(t)}. We already undid the turn: now it is at ${vec(back)}. <b>Tap the vector that slides it home.</b>`,
     visual: st => {
       st.draw = () => {
         st.grid();
@@ -168,7 +168,7 @@ const undoSlide = v => {
           : `After the turn back the point is at ${vec(back)}. The slide t′ must carry it from there to (0, 0), so t′ is the exact opposite of ${vec(back)}.`;
       },
     },
-    explain: `t′ = ${vec(ans)}: the opposite of t <i>after it has been turned back</i>. In symbols <b>T⁻¹ = (Rᵀ, −Rᵀt)</b>, and it is not (Rᵀ, −t). The other way to say the same undo is slide-first: slide ${vec(neg(t))}, then turn back. Both are right; only the turn-first form chains with other transforms.`,
+    explain: `t′ = ${vec(ans)}: the opposite of t <i>after it has been turned back</i>. In symbols <b>T⁻¹ = (Rᵀ, −Rᵀt)</b>, and it is not (Rᵀ, −t). The other way to say the same undo is slide-first: slide ${vec(neg(t))}, then turn back. Both sequences are valid. To write the inverse in the same turn-then-slide convention as T, use the turned-back slide.`,
     after: st => { shown = true; st.animate(1200, k => { u = k; }); },
   };
 };
@@ -253,26 +253,27 @@ const pInverse = v => {
   const R = Rcs(k.c, k.s), i = k.i, Rtt = apply(T(R), k.t).map(x => +x.toFixed(2)), ans = neg(Rtt);
   // Use identical numeric answers, input type, seed mapping and screen index so saved sessions still replay.
   const transfer = Math.floor(v / 6) % 2 === 1;
+  const mirror = transfer && Math.floor(v / 12) % 2 === 1;
   return {
     concept: 'rigid-inverse',
-    prompt: transfer ? `A scan maps tooth coordinates into camera coordinates: rotate by ${mat(R)}, then add ${vec(k.t)} mm. A landmark sits at the camera origin. <b>Locate it along the tooth’s ${xy(i)}-axis.</b>` : `T = (R, t) with R = ${mat(R)} and t = ${vec(k.t)}. Its inverse, written in the same turn-then-slide form, is (Rᵀ, t′). <b>Find the ${xy(i)}-component of t′, in two steps.</b>`,
+    prompt: mirror ? `In a phantom simulator, mirror-frame coordinates become camera coordinates by rotating with ${mat(R)}, then adding ${vec(k.t)} mm. A virtual marker is at camera (0, 0). <b>Find its mirror-frame ${xy(i)} coordinate.</b>` : transfer ? `A scan maps tooth coordinates into camera coordinates: rotate by ${mat(R)}, then add ${vec(k.t)} mm. A landmark sits at the camera origin. <b>Locate it along the tooth’s ${xy(i)}-axis.</b>` : `T = (R, t) with R = ${mat(R)} and t = ${vec(k.t)}. Its inverse, written in the same turn-then-slide form, is (Rᵀ, t′). <b>Find the ${xy(i)}-component of t′, in two steps.</b>`,
     input: {
       type: 'steps', steps: [
-        { label: transfer ? `Camera origin → tooth origin, along tooth ${xy(i)}` : `${xy(i)}-component of t after it is turned back`, answer: Rtt[i],
+        { label: transfer ? `Camera origin → ${mirror ? "mirror" : "tooth"} origin, along ${mirror ? "mirror" : "tooth"} ${xy(i)}` : `${xy(i)}-component of t after it is turned back`, answer: Rtt[i],
           why: x => diag(x, [
             [k.t[i], `That is t untouched. The inverse turns first, so t is turned back before anything is cancelled: you need Rᵀt.`],
             [apply(R, k.t)[i], `That is R·t. The inverse turns backwards, so t is turned by Rᵀ (rows and columns of R swapped), not by R.`],
             [-Rtt[i], `That is already −Rᵀt, the final answer. This step asks only for the turned-back t.`],
             [Rtt[1 - i], `That is the ${xy(1 - i)}-component of Rᵀt. This step asks for ${xy(i)}.`],
           ], `Turning back means multiplying by Rᵀ = ${mat(T(R))}: each of its rows dotted with t = ${vec(k.t)}.`) },
-        { label: transfer ? `Landmark coordinate along tooth ${xy(i)} (mm)` : `${xy(i)}-component of t′`, answer: ans[i],
+        { label: transfer ? `Landmark coordinate along ${mirror ? "mirror" : "tooth"} ${xy(i)} (mm)` : `${xy(i)}-component of t′`, answer: ans[i],
           why: x => diag(x, [
             [Rtt[i], `That is Rᵀt from step 1, without the minus sign. The inverse has to slide <i>back</i>: t′ = −Rᵀt.`],
             [-k.t[i], `That is −t. Sliding back by −t works only if you slide first and turn second. In turn-first form the slide is the turned-back t, negated: t′ = −Rᵀt.`],
           ], `t′ must cancel the turned-back t from step 1, so it is the same number with the opposite sign.`) },
       ],
     },
-    explain: transfer ? `The camera origin lies opposite the displacement from camera origin to tooth origin. In tooth axes that displacement is ${vec(Rtt)}, so the landmark is ${vec(ans)} mm. Check it forward: R times that point gives −t; adding t gives camera (0, 0).` : `T⁻¹ = (Rᵀ, −Rᵀt). Rᵀ = ${mat(T(R))}, so Rᵀt = ${vec(Rtt)} and t′ = ${vec(ans)}. Check: T sends the origin to t, and T⁻¹ must bring t back: Rᵀt + t′ = (0, 0).`,
+    explain: transfer ? `The camera origin lies opposite the displacement from camera origin to ${mirror ? "mirror" : "tooth"} origin. In ${mirror ? "mirror" : "tooth"} axes that displacement is ${vec(Rtt)}, so the landmark is ${vec(ans)} mm. Check it forward: R times that point gives −t; adding t gives camera (0, 0).` : `T⁻¹ = (Rᵀ, −Rᵀt). Rᵀ = ${mat(T(R))}, so Rᵀt = ${vec(Rtt)} and t′ = ${vec(ans)}. Check: T sends the origin to t, and T⁻¹ must bring t back: Rᵀt + t′ = (0, 0).`,
   };
 };
 
